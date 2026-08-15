@@ -1,0 +1,130 @@
+--- Facebook ---
+| Scope | What it enables |
+|-------|-----------------|
+| `pages_show_list` | List the Pages you manage during connection |
+| `pages_manage_posts` | Create, edit and delete Page posts |
+| `pages_read_engagement` | Read Page content and engagement (also used for analytics) |
+| `read_insights` | Page and post analytics (views, clicks, reach) |
+| `pages_manage_engagement` | Manage comments on Page posts |
+| `pages_read_user_content` | Read user-generated content (comments) on the Page |
+| `pages_messaging` | Messenger conversations in the inbox |
+| `pages_manage_metadata` | Page webhook subscriptions and settings |
+| `business_management` | Discover Pages owned through a Meta Business Manager |
+--------------------
+--- Instagram ---
+| Scope | What it enables |
+|-------|-----------------|
+| `instagram_business_basic` | Account identity and basic profile data |
+| `instagram_business_content_publish` | Publish posts, reels, stories and carousels |
+| `instagram_business_manage_insights` | Post and account analytics |
+| `instagram_business_manage_comments` | Read and reply to comments (including the first-comment feature) |
+| `instagram_business_manage_messages` | Instagram DMs in the inbox |
+--------------------
+| Scope | What it enables |
+|-------|-----------------|
+| `instagram_basic` | Account identity and basic profile data |
+| `instagram_content_publish` | Publish posts, reels, stories and carousels |
+| `instagram_manage_insights` | Post and account analytics |
+| `instagram_manage_comments` | Read and reply to comments (including the first-comment feature) |
+| `instagram_manage_messages` | Instagram DMs in the inbox |
+| `pages_show_list` | List the Pages the user manages, to find the linked Instagram account |
+| `pages_read_engagement` | Read the linked Page |
+| `business_management` | Resolve Pages owned through a Business Manager |
+--------------------
+--- TikTok ---
+| Scope | What it enables |
+|-------|-----------------|
+| `user.info.basic` | Account identity (username, avatar) for the connected account |
+| `user.info.profile` | Extended profile info (bio, verified status, profile link) |
+| `user.info.stats` | Follower, likes and video counts for account analytics |
+| `video.publish` | Direct-post publishing of videos and photo posts |
+| `video.upload` | Upload to the creator's TikTok inbox as a draft |
+| `video.list` | Read the account's videos for post analytics |
+--------------------
+--- YouTube ---
+| Scope | What it enables |
+|-------|-----------------|
+| `https://www.googleapis.com/auth/youtube.upload` | Upload videos to the channel |
+| `https://www.googleapis.com/auth/youtube` | Manage the channel: video metadata, playlists, thumbnails |
+| `https://www.googleapis.com/auth/youtube.force-ssl` | Read and post comments |
+| `https://www.googleapis.com/auth/yt-analytics.readonly` | Channel and video analytics |
+--------------------
+--- Threads ---
+--- X ---
+--- LinkedIn ---
+| Scope | What it enables |
+|-------|-----------------|
+| `openid`, `profile`, `email` | Account identity via OpenID Connect |
+| `r_basicprofile` | Profile vanity name (public profile URL) |
+| `r_1st_connections_size` | Connection count shown on the account |
+--------------------
+| Scope | What it enables |
+|-------|-----------------|
+| `w_member_social` | Publish posts and comments as the member |
+| `w_member_social_feed` | Reshares and feed interactions |
+| `r_member_postAnalytics` | Per-post analytics for member posts |
+| `r_member_profileAnalytics` | Profile-level analytics (impressions, viewers) |
+--------------------
+| Scope | What it enables |
+|-------|-----------------|
+| `w_organization_social` | Publish posts as an organization |
+| `w_organization_social_feed` | Organization reshares and feed interactions |
+| `rw_organization_admin` | List organizations you administer, manage page settings |
+| `r_organization_social` | Read organization posts and comments |
+| `r_organization_social_feed` | Read the organization's feed |
+| `r_organization_followers` | Follower statistics for organization pages |
+--------------------
+| Scope | What it enables |
+|-------|-----------------|
+| `r_ads` | Read ad accounts |
+| `rw_ads` | Create and manage campaigns and creatives |
+| `r_ads_reporting` | Ads reporting and analytics |
+| `rw_conversions` | Conversions API (server-side conversion events) |
+--------------------
+--- Pinterest ---
+| Scope | What it enables |
+|-------|-----------------|
+| `boards:read` | List boards during connection and post creation |
+| `boards:write` | [Create boards](#boards) via the API |
+| `pins:read` | Read pins (permalinks, analytics) |
+| `pins:write` | Create pins |
+| `user_accounts:read` | Account identity and account analytics |
+| `ads:read`, `ads:write` | [Pinterest Ads](/platforms/pinterest-ads): read ad accounts, create and manage campaigns |
+--------------------
+--- Snapchat ---
+| Scope | What it enables |
+|-------|-----------------|
+| `snapchat-profile-api` | Manage the connected Public Profile: publish to Spotlight and Stories, read profile data and analytics |
+--------------------
+--- Google Business ---
+| Scope | What it enables |
+|-------|-----------------|
+| `https://www.googleapis.com/auth/business.manage` | Manage locations: local posts, reviews, Q&A, and performance analytics |
+| `https://www.googleapis.com/auth/userinfo.profile` | Account identity during connection |
+| `https://www.googleapis.com/auth/userinfo.email` | Account email during connection |
+--------------------
+--- WhatsApp ---
+--- Reddit ---
+--- Bluesky ---
+--- Telegram ---
+--- Discord ---
+| Scope | What it enables |
+|-------|-----------------|
+| `bot` | Install the Zernio bot into your server; all posting happens through the bot |
+| `guilds` | List the servers you manage so you can pick where to post |
+--------------------
+--- Slack ---
+| Scope | What it enables |
+|-------|-----------------|
+| `chat:write` | Post messages as the bot |
+| `chat:write.public` | Post to public channels the bot hasn't joined |
+| `chat:write.customize` | Per-message display name and avatar override |
+| `channels:join` | Join public channels on connect |
+| `files:write` | Upload media with a post |
+| `channels:read`, `groups:read` | List channels so you can pick one |
+| `team:read` | Read workspace name and icon |
+| `channels:history`, `groups:history`, `im:history`, `mpim:history` | Receive inbound messages for the inbox |
+| `im:read`, `mpim:read`, `im:write` | Direct-message conversations |
+| `users:read` | Resolve sender names on inbound messages |
+| `files:read` | Inbound message attachments |
+--------------------

@@ -1,0 +1,170 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #00e5ff;
+  --color-on-primary: #00363d;
+  --color-primary-container: #004f59;
+  --color-on-primary-container: #99f2ff;
+  
+  --color-secondary: #d946ef;
+  --color-on-secondary: #4a005c;
+  --color-secondary-container: #6a0080;
+  --color-on-secondary-container: #fae8ff;
+
+  --color-tertiary: #a855f7;
+  --color-on-tertiary: #3b0764;
+  --color-tertiary-container: #581c87;
+  --color-on-tertiary-container: #f3e8ff;
+  
+  --color-background: #030014;
+  --color-on-background: #e2e8f0;
+  
+  --color-surface: #0b0f19;
+  --color-on-surface: #f1f5f9;
+  --color-surface-variant: #1e293b;
+  --color-on-surface-variant: #94a3b8;
+  
+  --color-surface-container-lowest: #020617;
+  --color-surface-container-low: #080f25;
+  --color-surface-container: #0f172a;
+  --color-surface-container-high: #1e293b;
+  --color-surface-container-highest: #334155;
+  
+  --color-outline: #475569;
+  --color-outline-variant: #334155;
+  
+  --color-error: #ef4444;
+  --color-on-error: #450a0a;
+  --color-error-container: #7f1d1d;
+  --color-on-error-container: #fca5a5;
+
+  --color-primary-fixed: #99f2ff;
+  --color-on-primary-fixed: #002024;
+  --color-secondary-fixed: #fae8ff;
+  --color-on-secondary-fixed: #2e003b;
+  
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.5rem;
+
+  --spacing-base: 8px;
+  --spacing-xs: 4px;
+  --spacing-sm: 12px;
+  --spacing-md: 24px;
+  --spacing-lg: 48px;
+  --spacing-xl: 80px;
+  --spacing-gutter: 24px;
+  --spacing-margin: 32px;
+
+  --font-body-lg: 'Be Vietnam Pro', sans-serif;
+  --font-body-md: 'Be Vietnam Pro', sans-serif;
+  --font-headline-lg: 'Be Vietnam Pro', sans-serif;
+  --font-display-lg: 'Be Vietnam Pro', sans-serif;
+  --font-headline-lg-mobile: 'Be Vietnam Pro', sans-serif;
+  --font-label-sm: 'JetBrains Mono', monospace;
+
+  --text-body-lg: 18px;
+  --text-body-lg--line-height: 28px;
+  --text-body-lg--font-weight: 500;
+
+  --text-body-md: 16px;
+  --text-body-md--line-height: 24px;
+  --text-body-md--font-weight: 500;
+
+  --text-headline-lg: 32px;
+  --text-headline-lg--line-height: 40px;
+  --text-headline-lg--font-weight: 600;
+
+  --text-display-lg: 48px;
+  --text-display-lg--line-height: 56px;
+  --text-display-lg--font-weight: 700;
+  --text-display-lg--letter-spacing: -0.02em;
+
+  --text-headline-lg-mobile: 28px;
+  --text-headline-lg-mobile--line-height: 36px;
+  --text-headline-lg-mobile--font-weight: 600;
+
+  --text-label-sm: 12px;
+  --text-label-sm--line-height: 16px;
+  --text-label-sm--font-weight: 600;
+  --text-label-sm--letter-spacing: 0.05em;
+}
+
+/* Custom scrollbar */
+.custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+    background-color: rgba(0, 229, 255, 0.3);
+    border-radius: 10px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(0, 229, 255, 0.5);
+}
+
+/* Fallback for global scrollbar */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background: rgba(0, 229, 255, 0.1);
+    border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 229, 255, 0.2);
+}
+
+.ai-draft-animation {
+    animation: pulse-glow 2s infinite alternate;
+}
+
+@keyframes pulse-glow {
+    0% { border-color: rgba(0, 229, 255, 0.2); box-shadow: 0 0 0 rgba(0, 229, 255, 0); }
+    100% { border-color: rgba(0, 229, 255, 0.8); box-shadow: 0 0 15px rgba(0, 229, 255, 0.4); }
+}
+
+.table-row-hover:hover {
+    background-color: rgba(0, 229, 255, 0.05);
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+
+.glass-card {
+    background: rgba(11, 15, 25, 0.7);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(71, 85, 105, 0.3);
+}
+.ai-gradient {
+    background: linear-gradient(135deg, rgba(0, 229, 255, 0.1) 0%, rgba(11, 15, 25, 0) 100%);
+}
+.ai-border {
+    border: 1px solid rgba(0, 229, 255, 0.5);
+}
+
+.material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24;
+}
+
+body {
+  font-family: var(--font-body-md);
+}
+
+/* Hide scrollbar for elements with no-scrollbar class */
+.no-scrollbar::-webkit-scrollbar {
+    display: none;
+}
+.no-scrollbar {
+    -ms-overflow-style: none;  /* IE and Edge */
+    scrollbar-width: none;  /* Firefox */
+}
+
