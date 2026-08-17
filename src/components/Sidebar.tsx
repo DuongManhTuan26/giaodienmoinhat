@@ -1,7 +1,13 @@
-import { NavLink } from 'react-router-dom';
+import { useState } from 'react';
+import { NavLink, useNavigate } from 'react-router-dom';
 import { clsx } from 'clsx';
+import { useActivePage, PLATFORM_BADGE } from '../lib/ActivePage';
 
 export default function Sidebar({ onLogout }: { onLogout?: () => void }) {
+  const navigate = useNavigate();
+  const { accounts, activeAccount, activeAccountId, setActiveAccountId } = useActivePage();
+  const [pageMenuOpen, setPageMenuOpen] = useState(false);
+
   const group1 = [
     { name: 'Bảng Điều Khiển', icon: 'dashboard', path: '/' },
     { name: 'Kết Nối Đa Nền Tảng', icon: 'cable', path: '/connections' },
@@ -123,17 +129,73 @@ export default function Sidebar({ onLogout }: { onLogout?: () => void }) {
         </div>
 
         {/* Fanpage Switcher */}
-        <div className="shrink-0" style={{ marginBottom: '24px' }}>
-          <button className="w-full flex items-center justify-between py-2.5 px-3 rounded-xl border border-white/5 bg-white/[0.02] backdrop-blur-md hover:border-[#00e5ff]/40 hover:bg-[#00e5ff]/5 hover:shadow-[0_0_20px_rgba(0,229,255,0.1)] transition-all duration-300 group">
-            <div className="flex items-center gap-3">
-              <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-surface-container to-surface flex items-center justify-center border border-white/10 font-mono text-[10px] text-white font-bold shrink-0 shadow-inner">FP</div>
-              <span className="font-body-md text-[14px] text-[#E8EDF2] group-hover:text-white transition-colors text-left whitespace-nowrap font-semibold tracking-wide">Fanpage Đang Chọn</span>
+        <div className="shrink-0 relative" style={{ marginBottom: '24px' }}>
+          <button
+            onClick={() => setPageMenuOpen((open) => !open)}
+            className="w-full flex items-center justify-between py-2.5 px-3 rounded-xl border border-white/5 bg-white/[0.02] backdrop-blur-md hover:border-[#00e5ff]/40 hover:bg-[#00e5ff]/5 hover:shadow-[0_0_20px_rgba(0,229,255,0.1)] transition-all duration-300 group"
+          >
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-surface-container to-surface flex items-center justify-center border border-white/10 font-mono text-[10px] text-white font-bold shrink-0 shadow-inner">
+                {activeAccount ? (PLATFORM_BADGE[activeAccount.platform] ?? 'FP') : 'FP'}
+              </div>
+              <span className="font-body-md text-[14px] text-[#E8EDF2] group-hover:text-white transition-colors text-left truncate font-semibold tracking-wide">
+                {activeAccount ? activeAccount.display_name : accounts.length ? 'Tất cả trang' : 'Chưa có trang nào'}
+              </span>
             </div>
-            <div className="flex flex-col -space-y-1">
+            <div className="flex flex-col -space-y-1 shrink-0">
               <span className="material-symbols-outlined text-[#E8EDF2] group-hover:text-[#00e5ff] transition-colors text-[16px] leading-none">keyboard_arrow_up</span>
               <span className="material-symbols-outlined text-[#E8EDF2] group-hover:text-[#00e5ff] transition-colors text-[16px] leading-none">keyboard_arrow_down</span>
             </div>
           </button>
+
+          {pageMenuOpen && (
+            <div className="absolute left-0 right-0 top-full mt-2 z-40 rounded-xl border border-[#00e5ff]/25 bg-[#0a1420] backdrop-blur-xl shadow-[0_0_24px_rgba(0,229,255,0.15)] overflow-hidden">
+              <button
+                onClick={() => { setActiveAccountId(null); setPageMenuOpen(false); }}
+                className={clsx(
+                  'w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-[#00e5ff]/10',
+                  !activeAccountId && 'bg-[#00e5ff]/10'
+                )}
+              >
+                <div className="w-6 h-6 rounded-lg border border-white/10 flex items-center justify-center font-mono text-[10px] text-white shrink-0">ALL</div>
+                <span className={clsx('text-[13px] font-semibold truncate', !activeAccountId ? 'text-[#00e5ff]' : 'text-[#E8EDF2]')}>
+                  Tất cả trang
+                </span>
+              </button>
+
+              {accounts.map((account) => (
+                <button
+                  key={account.id}
+                  onClick={() => { setActiveAccountId(account.id); setPageMenuOpen(false); }}
+                  className={clsx(
+                    'w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-[#00e5ff]/10',
+                    account.id === activeAccountId && 'bg-[#00e5ff]/10'
+                  )}
+                >
+                  <div className="w-6 h-6 rounded-lg border border-white/10 flex items-center justify-center font-mono text-[10px] text-white shrink-0 overflow-hidden">
+                    {account.profile_picture
+                      ? <img src={account.profile_picture} alt="" className="w-full h-full object-cover"/>
+                      : (PLATFORM_BADGE[account.platform] ?? '?')}
+                  </div>
+                  <span className={clsx('text-[13px] font-semibold truncate flex-1', account.id === activeAccountId ? 'text-[#00e5ff]' : 'text-[#E8EDF2]')}>
+                    {account.display_name || account.username}
+                  </span>
+                  {!account.connected && (
+                    <span className="text-[10px] text-[#ef4444] font-bold shrink-0">MẤT KẾT NỐI</span>
+                  )}
+                </button>
+              ))}
+
+              {accounts.length === 0 && (
+                <button
+                  onClick={() => { setPageMenuOpen(false); navigate('/connections'); }}
+                  className="w-full px-3 py-3 text-left text-[13px] text-[#00e5ff] font-semibold hover:bg-[#00e5ff]/10 transition-colors"
+                >
+                  + Kết nối trang đầu tiên
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Main Nav */}
@@ -153,13 +215,15 @@ export default function Sidebar({ onLogout }: { onLogout?: () => void }) {
           <div style={{ height: '1px', background: 'linear-gradient(90deg, transparent, rgba(0,229,255,0.2), transparent)' }}></div>
           <div style={{ height: '16px' }}></div>
           <div className="flex flex-col" style={{ gap: '4px' }}>
-            <a 
-              className="flex items-center gap-3 px-3 rounded-lg hover:bg-white/5 transition-colors group shrink-0" 
-              href="#" 
-              style={{ 
-                color: 'rgba(232,237,242,0.4)', 
-                fontSize: '13px', 
-                fontWeight: 400, 
+            <a
+              className="flex items-center gap-3 px-3 rounded-lg hover:bg-white/5 transition-colors group shrink-0"
+              href="https://docs.zernio.com/"
+              target="_blank"
+              rel="noreferrer"
+              style={{
+                color: 'rgba(232,237,242,0.4)',
+                fontSize: '13px',
+                fontWeight: 400,
                 height: '40px',
                 fontFamily: "'Be Vietnam Pro', sans-serif"
               }}

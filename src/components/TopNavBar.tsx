@@ -1,5 +1,6 @@
-import { useLocation } from 'react-router-dom';
-import type { User } from '../lib/api';
+import { useEffect, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { api, type User } from '../lib/api';
 
 export default function TopNavBar({ user, avatarUrl }: {
   user?: User | null;
@@ -7,7 +8,33 @@ export default function TopNavBar({ user, avatarUrl }: {
   avatarUrl?: string | null;
 }) {
   const location = useLocation();
-  
+  const navigate = useNavigate();
+  const [waitingCount, setWaitingCount] = useState(0);
+
+  // Số hội thoại AI đã nhường quyền, hiện trên chuông thông báo.
+  // Nạp lại mỗi khi đổi trang và định kỳ, để nhân viên không bỏ sót khách.
+  useEffect(() => {
+    let cancelled = false;
+
+    const load = () => {
+      api.inbox
+        .counts()
+        .then(({ data }) => {
+          if (!cancelled) setWaitingCount(Number(data.waiting_human) || 0);
+        })
+        .catch(() => {
+          /* Không lấy được số thì để nguyên, không cần báo lỗi ở thanh trên. */
+        });
+    };
+
+    load();
+    const timer = setInterval(load, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [location.pathname]);
+
   const getPageTitle = () => {
     switch (location.pathname) {
       case '/': return 'Bảng điều khiển';
@@ -35,10 +62,23 @@ export default function TopNavBar({ user, avatarUrl }: {
         </div>
       </div>
       <div className="flex items-center gap-base">
-        <button className="text-primary hover:bg-surface-container-highest/80 rounded-full p-2 transition-all duration-200 flex items-center justify-center">
+        <button
+          onClick={() => navigate('/inbox')}
+          title={waitingCount > 0 ? `${waitingCount} hội thoại đang chờ bạn xử lý` : 'Không có việc nào đang chờ'}
+          className="text-primary hover:bg-surface-container-highest/80 rounded-full p-2 transition-all duration-200 flex items-center justify-center relative"
+        >
           <span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 0" }}>notifications</span>
+          {waitingCount > 0 && (
+            <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-error text-on-error text-[10px] font-bold flex items-center justify-center border-2 border-surface">
+              {waitingCount > 99 ? '99+' : waitingCount}
+            </span>
+          )}
         </button>
-        <button className="text-primary hover:bg-surface-container-highest/80 rounded-full p-2 transition-all duration-200 flex items-center justify-center">
+        <button
+          onClick={() => navigate('/auto-scripts')}
+          title="Cấu hình AI bán hàng"
+          className="text-primary hover:bg-surface-container-highest/80 rounded-full p-2 transition-all duration-200 flex items-center justify-center"
+        >
           <span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 0" }}>bolt</span>
         </button>
         <div className="h-8 w-8 rounded-full ml-sm border-2 border-primary overflow-hidden relative group cursor-pointer" title={user?.email ?? ''}>

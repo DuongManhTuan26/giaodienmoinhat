@@ -16,6 +16,7 @@ import Auth from './pages/Auth';
 import Onboarding from './pages/Onboarding';
 import SetupComplete from './pages/SetupComplete';
 import { api, ApiError, type User } from './lib/api';
+import { ActivePageProvider } from './lib/ActivePage';
 
 type AppState = 'loading' | 'auth' | 'onboarding' | 'setup_complete' | 'main';
 
@@ -118,6 +119,7 @@ export default function App() {
   }
 
   return (
+    <ActivePageProvider>
     <div className="flex h-screen w-full bg-background">
       <Sidebar onLogout={handleLogout} />
       <div className="flex-1 ml-72 flex flex-col h-screen relative">
@@ -139,5 +141,6 @@ export default function App() {
         </main>
       </div>
     </div>
+    </ActivePageProvider>
   );
 }

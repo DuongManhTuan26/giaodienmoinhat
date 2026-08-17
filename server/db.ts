@@ -15,17 +15,37 @@ pg.types.setTypeParser(20, (value) => (value === null ? null : Number(value)));
 export const pool = new Pool({
   connectionString: env.databaseUrl,
   max: 10,
-  idleTimeoutMillis: 30_000,
+  // Neon đóng kết nối rảnh khá sớm. Chủ động thả trước khi phía họ thả,
+  // để không bao giờ dùng phải một kết nối đã chết.
+  idleTimeoutMillis: 20_000,
   connectionTimeoutMillis: 10_000,
+  // Giữ nhịp TCP để thiết bị mạng ở giữa không âm thầm cắt kết nối.
+  keepAlive: true,
 });
 
 /**
- * Lỗi từ client rảnh trong pool (ví dụ Neon ngắt kết nối khi ngủ đông) được
- * bắt ở đây. Không có handler này thì Node coi đó là uncaught exception và
- * giết tiến trình — đúng lỗi đã làm sập server ở phiên bản trước.
+ * Lỗi trên kết nối rảnh trong pool.
+ * Không có handler này thì Node coi là uncaught exception và giết tiến trình.
  */
 pool.on("error", (err) => {
   console.error("[db] Lỗi trên kết nối rảnh, pool sẽ tự tạo kết nối mới:", err.message);
+});
+
+/**
+ * Lỗi trên TỪNG kết nối cụ thể.
+ *
+ * pool.on('error') chỉ bắt lỗi của kết nối đang nằm rảnh trong pool. Khi
+ * Neon ngắt một kết nối đang được mượn ra dùng, lỗi phát ra trên chính đối
+ * tượng client dưới dạng sự kiện 'error'. Sự kiện không có người nghe thì
+ * Node ném ra ngoài và giết cả tiến trình — try/catch quanh câu truy vấn
+ * không cứu được, vì đây là sự kiện chứ không phải promise bị từ chối.
+ *
+ * Đây chính là lỗi đã làm sập server ngày 17/08/2026.
+ */
+pool.on("connect", (client) => {
+  client.on("error", (err) => {
+    console.error("[db] Kết nối bị ngắt giữa chừng:", err.message);
+  });
 });
 
 export type QueryParams = ReadonlyArray<unknown>;

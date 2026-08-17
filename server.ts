@@ -11,7 +11,31 @@ import { startWorker, stopWorker, recoverStuckEvents } from "./server/worker.js"
  * Thứ tự có chủ đích: kiểm tra database trước, chạy migration, rồi mới mở cổng.
  * Server không bao giờ nhận request khi lược đồ chưa sẵn sàng.
  */
+/**
+ * Lưới an toàn cuối cùng.
+ *
+ * Mọi nguồn lỗi đã biết đều được xử lý tại chỗ. Hai handler này chỉ để
+ * những lỗi ngoài dự kiến được ghi lại đầy đủ thay vì chết câm lặng, giúp
+ * tìm nguyên nhân khi vận hành thật.
+ */
+function installCrashGuards(): void {
+  process.on("unhandledRejection", (reason) => {
+    console.error(
+      "[nghiêm trọng] Promise bị từ chối mà không ai bắt:",
+      reason instanceof Error ? (reason.stack ?? reason.message) : reason
+    );
+  });
+
+  process.on("uncaughtException", (error) => {
+    console.error("[nghiêm trọng] Lỗi không bắt được:", error.stack ?? error.message);
+    // Tiến trình có thể đã ở trạng thái hỏng. Thoát để trình quản lý dịch vụ
+    // khởi động lại sạch sẽ, thay vì chạy tiếp với dữ liệu không đáng tin.
+    process.exit(1);
+  });
+}
+
 async function main() {
+  installCrashGuards();
   logStartupWarnings();
 
   console.log("[khởi động] Đang kiểm tra kết nối database…");

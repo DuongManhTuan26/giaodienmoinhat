@@ -21,6 +21,7 @@ export default function Dashboard() {
   const [isApplying, setIsApplying] = useState(false);
   const [range, setRange] = useState<Range>('1d');
   const [rangeOpen, setRangeOpen] = useState(false);
+  const [insightDismissed, setInsightDismissed] = useState(false);
 
   const load = useCallback(async (selected: Range) => {
     setIsLoading(true);
@@ -296,6 +297,7 @@ export default function Dashboard() {
           <div className="w-full xl:w-80 flex flex-col gap-gutter shrink-0">
             
             {/* Block 1: AI Insights */}
+            {!insightDismissed && (
             <div className="bg-gradient-to-br from-primary/10 to-surface-container rounded-xl border border-primary/30 p-5 shadow-[0_0_20px_rgba(0,229,255,0.1)] relative overflow-hidden">
               <div className="absolute -top-10 -right-10 w-32 h-32 bg-primary/20 rounded-full blur-2xl"></div>
               
@@ -328,11 +330,15 @@ export default function Dashboard() {
                   ) : null}
                   {isApplying ? 'Đang áp dụng...' : 'Áp dụng đề xuất'}
                 </button>
-                <button className="px-4 py-2 bg-transparent border border-outline-variant text-on-surface hover:text-primary hover:border-primary text-sm font-medium rounded transition-colors">
+                <button
+                  onClick={() => setInsightDismissed(true)}
+                  className="px-4 py-2 bg-transparent border border-outline-variant text-on-surface hover:text-primary hover:border-primary text-sm font-medium rounded transition-colors"
+                >
                   Bỏ qua
                 </button>
               </div>
             </div>
+            )}
 
             {/* Block 2: Urgent Tasks */}
             <div className="bg-surface-container rounded-xl border border-error/30 p-4 shadow-lg">
