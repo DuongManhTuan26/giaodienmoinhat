@@ -13,6 +13,7 @@ import { ordersRouter } from "./routes/orders.js";
 import { aiRouter } from "./routes/ai.js";
 import { postsRouter } from "./routes/posts.js";
 import { settingsRouter } from "./routes/settings.js";
+import { adsRouter } from "./routes/ads.js";
 
 export async function createApp() {
   const app = express();
@@ -42,6 +43,7 @@ export async function createApp() {
   app.use("/api/ai", aiRouter);
   app.use("/api/posts", postsRouter);
   app.use("/api/settings", settingsRouter);
+  app.use("/api/ads", adsRouter);
 
   // Bất kỳ đường dẫn /api nào không khớp đều trả JSON, không trả trang HTML.
   app.use("/api", (_req, res) => {

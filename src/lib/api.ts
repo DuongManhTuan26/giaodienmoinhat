@@ -397,6 +397,63 @@ export const api = {
     remove: (id: number) => del<{ success: boolean }>(`/posts/${id}`),
   },
 
+  ads: {
+    overview: (range = "last_7d") =>
+      get<{
+        data: {
+          connected: boolean;
+          account: {
+            accountId: string;
+            adAccountId: string;
+            name: string;
+            currency: string;
+            status: number;
+            timezone?: string;
+            minDailyBudget?: number;
+            amountSpent?: string | number;
+          } | null;
+          campaigns: Array<Record<string, unknown>>;
+          insights: Record<string, unknown> | null;
+          audiences: Array<Record<string, unknown>>;
+        };
+        message?: string;
+      }>(`/ads/overview?range=${range}`),
+    boostablePosts: () =>
+      get<{ data: Post[] }>("/ads/boostable-posts"),
+    setCampaignStatus: (campaignIds: string[], status: "ACTIVE" | "PAUSED" | "ARCHIVED") =>
+      post<{ data: unknown }>("/ads/campaigns/status", { campaignIds, status }),
+    duplicateCampaign: (id: string) =>
+      post<{ data: unknown }>(`/ads/campaigns/${encodeURIComponent(id)}/duplicate`),
+    campaignAnalytics: (id: string, range = "last_7d") =>
+      get<{ data: Record<string, unknown> }>(
+        `/ads/campaigns/${encodeURIComponent(id)}/analytics?range=${range}`
+      ),
+    boost: (payload: {
+      postId: number;
+      dailyBudget: number;
+      durationDays: number;
+      objective?: string;
+      targeting?: Record<string, unknown>;
+    }) => post<{ data: unknown }>("/ads/boost", payload),
+    createAudience: (payload: {
+      name: string;
+      subtype: string;
+      description?: string;
+      extra?: Record<string, unknown>;
+    }) => post<{ data: unknown }>("/ads/audiences", payload),
+    reachEstimate: (targeting: Record<string, unknown>) =>
+      post<{ data: Record<string, unknown> }>("/ads/reach-estimate", { targeting }),
+    analyze: () =>
+      post<{
+        data: {
+          hasData: boolean;
+          findings: string;
+          recommendation: string;
+          actions: string[];
+        };
+      }>("/ads/analyze"),
+  },
+
   ai: {
     config: (kind: string) =>
       get<{ data: { config: AiConfig; documents: AiDocument[]; model: string } }>(

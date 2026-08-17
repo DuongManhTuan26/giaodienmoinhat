@@ -1,8 +1,25 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { clsx } from 'clsx';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
-import { mockAdsChartData, mockAdsCampaigns, mockAdsAudiences, mockAdsPosts } from '../data/mockApi';
 import AITrainingModal from '../components/AITrainingModal';
+import { api, ApiError, formatCurrency, type Post } from '../lib/api';
+
+/** Trạng thái Meta -> nhãn tiếng Việt mà giao diện đang dùng. */
+function statusLabel(metaStatus: string): string {
+  switch ((metaStatus ?? '').toUpperCase()) {
+    case 'ACTIVE': return 'Đang chạy';
+    case 'PAUSED': return 'Tạm dừng';
+    default: return 'Đã kết thúc';
+  }
+}
+
+/** Rút gọn số lớn: 124000 -> 124K. */
+function compact(value: number): string {
+  if (!Number.isFinite(value)) return '0';
+  if (value >= 1_000_000) return (value / 1_000_000).toFixed(1).replace('.0', '') + 'M';
+  if (value >= 1_000) return (value / 1_000).toFixed(1).replace('.0', '') + 'K';
+  return String(Math.round(value));
+}
 
 export default function Ads() {
   const [filter, setFilter] = useState('Tất cả');
@@ -11,8 +28,8 @@ export default function Ads() {
   const [isSuccess, setIsSuccess] = useState(false);
   const [isAudienceFlowOpen, setIsAudienceFlowOpen] = useState(false);
   const [isTrainingOpen, setIsTrainingOpen] = useState(false);
-  
-  // Create Audience Form State
+
+  // Trạng thái biểu mẫu tạo tệp đối tượng
   const [audName, setAudName] = useState('');
   const [audType, setAudType] = useState('custom');
   const [audCustomSources, setAudCustomSources] = useState<string[]>([]);
@@ -21,9 +38,58 @@ export default function Ads() {
   const [audInterests, setAudInterests] = useState<string[]>([]);
   const [audNewInterest, setAudNewInterest] = useState('');
 
+  // Dữ liệu thật từ Meta qua Zernio
+  const [connected, setConnected] = useState(false);
+  const [adAccount, setAdAccount] = useState<{
+    name: string; currency: string; status: number; minDailyBudget?: number;
+  } | null>(null);
+  const [campaigns, setCampaigns] = useState<Array<Record<string, unknown>>>([]);
+  const [audiences, setAudiences] = useState<Array<Record<string, unknown>>>([]);
+  const [insights, setInsights] = useState<Record<string, unknown> | null>(null);
+  const [boostablePosts, setBoostablePosts] = useState<Post[]>([]);
+  const [notice, setNotice] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [aiInsight, setAiInsight] = useState<{
+    hasData: boolean; findings: string; recommendation: string; actions: string[];
+  } | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [overview, posts] = await Promise.all([
+        api.ads.overview(),
+        api.ads.boostablePosts().catch(() => ({ data: [] as Post[] })),
+      ]);
+      setConnected(overview.data.connected);
+      setAdAccount(overview.data.account);
+      setCampaigns(overview.data.campaigns);
+      setAudiences(overview.data.audiences);
+      setInsights(overview.data.insights);
+      setBoostablePosts(posts.data);
+      setNotice(overview.message ?? '');
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không tải được dữ liệu quảng cáo');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Trạng thái biểu mẫu quảng cáo bài viết
+  const [selectedPostId, setSelectedPostId] = useState<string | null>(null);
+  const [dailyBudget, setDailyBudget] = useState<number>(300000);
+  const [duration, setDuration] = useState<number>(5);
+  const [audienceType, setAudienceType] = useState('custom');
+  const [location, setLocation] = useState('Toàn quốc');
+  const [ageRange, setAgeRange] = useState([25, 45]);
+  const [gender, setGender] = useState('Tất cả');
+
   const handleToggleCustomSource = (source: string) => {
-    setAudCustomSources(prev => 
-      prev.includes(source) ? prev.filter(s => s !== source) : [...prev, source]
+    setAudCustomSources((prev) =>
+      prev.includes(source) ? prev.filter((s) => s !== source) : [...prev, source]
     );
   };
 
@@ -38,30 +104,280 @@ export default function Ads() {
   const handleRemoveInterest = (idx: number) => {
     setAudInterests(audInterests.filter((_, i) => i !== idx));
   };
-  
-  // Form state
-  const [selectedPostId, setSelectedPostId] = useState<string | null>(null);
-  const [dailyBudget, setDailyBudget] = useState<number>(300000);
-  const [duration, setDuration] = useState<number>(5);
-  const [audienceType, setAudienceType] = useState('custom');
-  const [location, setLocation] = useState('Toàn quốc');
-  const [ageRange, setAgeRange] = useState([25, 45]);
-  const [gender, setGender] = useState('Tất cả');
 
   const openFlow = () => {
     setIsFlowOpen(true);
     setCurrentStep(1);
     setIsSuccess(false);
+    setErrorMessage('');
   };
-  
+
   const closeFlow = () => {
     setIsFlowOpen(false);
+    setCurrentStep(1);
+    setIsSuccess(false);
   };
-  
-  const filteredCampaigns = mockAdsCampaigns.filter(camp => {
-    if (filter === 'Tất cả') return true;
-    return camp.status === filter;
+
+  /** Đẩy ngân sách cho bài đã chọn — gọi Meta thật qua Zernio. */
+  const handleLaunchBoost = async () => {
+    if (!selectedPostId) {
+      setErrorMessage('Hãy chọn một bài đã đăng để quảng cáo.');
+      return;
+    }
+    setBusy(true);
+    setErrorMessage('');
+    try {
+      await api.ads.boost({
+        postId: Number(selectedPostId),
+        dailyBudget,
+        durationDays: duration,
+        objective: 'engagement',
+        targeting: {
+          geoLocations: { countries: ['VN'] },
+          ageMin: ageRange[0],
+          ageMax: ageRange[1],
+          genders: gender === 'Nam' ? [1] : gender === 'Nữ' ? [2] : undefined,
+        },
+      });
+      setIsSuccess(true);
+      await load();
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không tạo được quảng cáo');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCreateAudience = async () => {
+    if (!audName.trim()) {
+      setErrorMessage('Hãy đặt tên cho tệp đối tượng.');
+      return;
+    }
+    setBusy(true);
+    setErrorMessage('');
+    try {
+      await api.ads.createAudience({
+        name: audName.trim(),
+        subtype:
+          audType === 'lookalike' ? 'LOOKALIKE'
+          : audType === 'interest' ? 'SAVED_TARGETING'
+          : 'CUSTOM',
+        extra:
+          audType === 'lookalike'
+            ? { ratio: audLookalikePercent / 100, sourceName: audLookalikeSource }
+            : audType === 'interest'
+              ? { interests: audInterests }
+              : { sources: audCustomSources },
+      });
+      setIsAudienceFlowOpen(false);
+      setAudName('');
+      setAudInterests([]);
+      setAudCustomSources([]);
+      await load();
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không tạo được tệp đối tượng');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runCampaignAction = async (action: () => Promise<unknown>) => {
+    setBusy(true);
+    setErrorMessage('');
+    try {
+      await action();
+      await load();
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Thao tác thất bại');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handlePauseCampaign = (id: string) =>
+    runCampaignAction(() => api.ads.setCampaignStatus([id], 'PAUSED'));
+  const handleResumeCampaign = (id: string) =>
+    runCampaignAction(() => api.ads.setCampaignStatus([id], 'ACTIVE'));
+  const handleEndCampaign = (id: string) => {
+    if (!confirm('Kết thúc chiến dịch này? Thao tác này không thể hoàn tác.')) return;
+    return runCampaignAction(() => api.ads.setCampaignStatus([id], 'ARCHIVED'));
+  };
+  const handleDuplicateCampaign = (id: string) =>
+    runCampaignAction(() => api.ads.duplicateCampaign(id));
+
+  const [campaignDetail, setCampaignDetail] = useState<Record<string, unknown> | null>(null);
+  const [reachEstimate, setReachEstimate] = useState('Đang tính…');
+
+  /**
+   * Dự báo tiếp cận lấy từ Meta theo đúng cấu hình nhắm chọn đang đặt.
+   * Bản cũ ghi cứng "12.000 - 18.000 người" cho mọi ngân sách và mọi độ tuổi.
+   */
+  useEffect(() => {
+    if (!isFlowOpen || currentStep < 3 || !connected) return;
+    let cancelled = false;
+    setReachEstimate('Đang tính…');
+
+    api.ads
+      .reachEstimate({
+        geoLocations: { countries: ['VN'] },
+        ageMin: ageRange[0],
+        ageMax: ageRange[1],
+        genders: gender === 'Nam' ? [1] : gender === 'Nữ' ? [2] : undefined,
+      })
+      .then(({ data }) => {
+        if (cancelled) return;
+        const raw = data as Record<string, any>;
+        const lower = Number(raw.usersLowerBound ?? raw.users_lower_bound ?? raw.estimateMau);
+        const upper = Number(raw.usersUpperBound ?? raw.users_upper_bound ?? lower);
+        if (Number.isFinite(lower) && lower > 0) {
+          setReachEstimate(
+            Number.isFinite(upper) && upper > lower
+              ? `${lower.toLocaleString('vi-VN')} - ${upper.toLocaleString('vi-VN')} người`
+              : `${lower.toLocaleString('vi-VN')} người`
+          );
+        } else {
+          setReachEstimate('Meta chưa trả về dự báo');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setReachEstimate('Chưa lấy được dự báo từ Meta');
+      });
+
+    return () => { cancelled = true; };
+  }, [isFlowOpen, currentStep, connected, ageRange, gender]);
+
+
+  const handleViewCampaign = async (id: string) => {
+    setBusy(true);
+    setErrorMessage('');
+    try {
+      const { data } = await api.ads.campaignAnalytics(id);
+      setCampaignDetail(data);
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không lấy được số liệu chiến dịch');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * Sửa ngân sách và cấu hình sâu vẫn phải làm trong Trình quản lý quảng cáo
+   * của Meta — mở thẳng sang đó thay vì dựng lại một biểu mẫu nửa vời.
+   */
+  const handleOpenOnMeta = (campaignId: string) => {
+    window.open(
+      `https://adsmanager.facebook.com/adsmanager/manage/campaigns?selected_campaign_ids=${encodeURIComponent(campaignId)}`,
+      '_blank', 'noopener,noreferrer'
+    );
+  };
+
+  const handleOpenAudienceOnMeta = (audienceId: string) => {
+    window.open(
+      `https://adsmanager.facebook.com/audiences?selected_audience_ids=${encodeURIComponent(audienceId)}`,
+      '_blank', 'noopener,noreferrer'
+    );
+  };
+
+  const handleAnalyze = async () => {
+    setBusy(true);
+    setErrorMessage('');
+    try {
+      const { data } = await api.ads.analyze();
+      setAiInsight(data);
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'AI chưa phân tích được');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Số liệu tổng, đọc từ insights thật của Meta. */
+  const totals = (() => {
+    const raw = (insights ?? {}) as Record<string, any>;
+    const first = Array.isArray(raw.data) ? (raw.data[0] ?? {}) : raw;
+    const num = (v: unknown) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    };
+    return {
+      reach: num(first.reach ?? first.impressions),
+      spend: num(first.spend),
+      clicks: num(first.clicks ?? first.inline_link_clicks),
+      cpc: num(first.cpc),
+    };
+  })();
+
+  /** Biểu đồ: dựng từ dãy số liệu theo ngày mà Meta trả về. */
+  const chartData = (() => {
+    const raw = (insights ?? {}) as Record<string, any>;
+    const series = Array.isArray(raw.data) ? raw.data : [];
+    if (series.length === 0) return [] as Array<{ name: string; reach: number; orders: number }>;
+    return series.map((row: Record<string, any>) => ({
+      name: row.date_start
+        ? new Date(row.date_start).toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })
+        : '',
+      reach: Number(row.reach ?? row.impressions ?? 0),
+      orders: Number(row.actions?.length ?? 0),
+    }));
+  })();
+
+  /** Chiến dịch Meta -> hình dạng mà thẻ chiến dịch trên giao diện đang vẽ. */
+  const displayCampaigns = campaigns.map((raw) => {
+    const c = raw as Record<string, any>;
+    const daily = Number(c.dailyBudget ?? c.daily_budget ?? 0);
+    const spent = Number(c.spend ?? 0);
+    const lifetime = Number(c.lifetimeBudget ?? c.lifetime_budget ?? 0);
+    return {
+      id: String(c.id),
+      name: String(c.name ?? 'Chiến dịch không tên'),
+      startDate: c.startTime
+        ? `Bắt đầu từ ${new Date(c.startTime).toLocaleDateString('vi-VN')}`
+        : 'Chưa có ngày bắt đầu',
+      type: String(c.objective ?? 'Chiến dịch'),
+      budget: daily > 0 ? `${formatCurrency(daily)}/ngày` : 'Chưa đặt ngân sách',
+      spent: {
+        current: spent > 0 ? spent.toLocaleString('vi-VN') : '0',
+        total: lifetime > 0 ? formatCurrency(lifetime) : formatCurrency(daily),
+        percent: lifetime > 0 ? Math.min(100, Math.round((spent / lifetime) * 100)) : 0,
+      },
+      reach: compact(Number(c.reach ?? 0)),
+      comments: Number(c.comments ?? 0),
+      orders: Number(c.conversions ?? 0),
+      status: statusLabel(String(c.status ?? '')),
+    };
   });
+
+  const filteredCampaigns = displayCampaigns.filter((camp) =>
+    filter === 'Tất cả' ? true : camp.status === filter
+  );
+
+  /** Tệp đối tượng Meta -> hình dạng thẻ trên giao diện. */
+  const displayAudiences = audiences.map((raw) => {
+    const a = raw as Record<string, any>;
+    return {
+      id: String(a.id),
+      name: String(a.name ?? 'Tệp không tên'),
+      size: a.approximateCount != null
+        ? `${Number(a.approximateCount).toLocaleString('vi-VN')} người`
+        : 'Đang tính',
+      type: a.subtype === 'LOOKALIKE' ? 'Tệp tương tự'
+        : a.subtype === 'CUSTOM' ? 'Tệp tùy chỉnh'
+        : 'Theo sở thích',
+    };
+  });
+
+  /** Bài đã đăng -> hình dạng thẻ chọn bài để quảng cáo. */
+  const displayPosts = boostablePosts.map((post) => ({
+    id: String(post.id),
+    hasImage: Array.isArray(post.media) && post.media.length > 0,
+    content: post.content,
+    date: post.published_at ? new Date(post.published_at).toLocaleDateString('vi-VN') : '',
+    stats: {
+      likes: post.stats?.likes ?? 0,
+      comments: post.stats?.comments ?? 0,
+      shares: post.stats?.shares ?? 0,
+    },
+  }));
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -200,13 +516,13 @@ export default function Ads() {
       <div className="bg-surface-container/30 border border-outline-variant rounded-2xl p-6 mb-8 flex flex-col">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-lg font-bold text-on-surface">Hiệu quả chiến dịch</h2>
-          <button className="font-mono text-xs font-bold text-primary hover:brightness-110 uppercase tracking-wider">
-            XEM CHI TIẾT →
+          <button onClick={handleAnalyze} disabled={busy || !connected} className="font-mono text-xs font-bold text-primary hover:brightness-110 uppercase tracking-wider disabled:opacity-50">
+            {busy ? 'ĐANG PHÂN TÍCH…' : 'AI PHÂN TÍCH →'}
           </button>
         </div>
         <div className="w-full h-[300px]">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={mockAdsChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+            <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
               <defs>
                 <linearGradient id="colorReach" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="#00E5FF" stopOpacity={0.3}/>
@@ -308,12 +624,16 @@ export default function Ads() {
                       <span className="material-symbols-outlined text-[20px]">more_vert</span>
                     </button>
                     <div className="absolute right-8 top-1/2 -translate-y-1/2 w-48 bg-surface-container-high border border-outline-variant rounded-xl shadow-xl py-1 opacity-0 invisible peer-hover:opacity-100 peer-hover:visible hover:opacity-100 hover:visible transition-all z-10">
-                      <button className="w-full text-left px-4 py-2 text-sm text-on-surface hover:bg-surface-variant transition-colors">Xem chi tiết</button>
-                      <button className="w-full text-left px-4 py-2 text-sm text-on-surface hover:bg-surface-variant transition-colors">Sửa ngân sách</button>
-                      <button className="w-full text-left px-4 py-2 text-sm text-on-surface hover:bg-surface-variant transition-colors">Tạm dừng</button>
-                      <button className="w-full text-left px-4 py-2 text-sm text-on-surface hover:bg-surface-variant transition-colors">Nhân bản</button>
+                      <button onClick={() => handleViewCampaign(camp.id)} className="w-full text-left px-4 py-2 text-sm text-on-surface hover:bg-surface-variant transition-colors">Xem chi tiết</button>
+                      <button onClick={() => handleOpenOnMeta(camp.id)} className="w-full text-left px-4 py-2 text-sm text-on-surface hover:bg-surface-variant transition-colors">Sửa ngân sách</button>
+                      {camp.status === 'Đang chạy' ? (
+                        <button onClick={() => handlePauseCampaign(camp.id)} disabled={busy} className="w-full text-left px-4 py-2 text-sm text-on-surface hover:bg-surface-variant transition-colors disabled:opacity-50">Tạm dừng</button>
+                      ) : (
+                        <button onClick={() => handleResumeCampaign(camp.id)} disabled={busy} className="w-full text-left px-4 py-2 text-sm text-on-surface hover:bg-surface-variant transition-colors disabled:opacity-50">Chạy lại</button>
+                      )}
+                      <button onClick={() => handleDuplicateCampaign(camp.id)} disabled={busy} className="w-full text-left px-4 py-2 text-sm text-on-surface hover:bg-surface-variant transition-colors disabled:opacity-50">Nhân bản</button>
                       <div className="h-px bg-outline-variant/50 my-1"></div>
-                      <button className="w-full text-left px-4 py-2 text-sm text-error hover:bg-error/10 transition-colors">Kết thúc</button>
+                      <button onClick={() => handleEndCampaign(camp.id)} disabled={busy} className="w-full text-left px-4 py-2 text-sm text-error hover:bg-error/10 transition-colors disabled:opacity-50">Kết thúc</button>
                     </div>
                   </td>
                 </tr>
@@ -339,13 +659,13 @@ export default function Ads() {
         </div>
         
         <div className="flex overflow-x-auto gap-4 pb-2 ">
-          {mockAdsAudiences.map(aud => (
+          {displayAudiences.map(aud => (
             <div key={aud.id} className="bg-surface-container/50 border border-outline-variant/50 rounded-xl p-4 flex flex-col justify-between group hover:border-primary/30 transition-colors min-w-[250px] flex-shrink-0 h-[100px]">
               <div className="flex items-start justify-between mb-2">
                 <span className="px-2 py-0.5 bg-surface-variant text-on-surface-variant font-medium text-[11px] uppercase tracking-wider rounded">
                   {aud.type}
                 </span>
-                <button className="text-on-surface-variant opacity-0 group-hover:opacity-100 hover:text-on-surface transition-opacity">
+                <button onClick={() => handleOpenAudienceOnMeta(aud.id)} title="Mở trong Trình quản lý quảng cáo" className="text-on-surface-variant opacity-0 group-hover:opacity-100 hover:text-on-surface transition-opacity">
                   <span className="material-symbols-outlined text-[18px]">more_horiz</span>
                 </button>
               </div>
@@ -434,7 +754,7 @@ export default function Ads() {
                   </p>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-                    {mockAdsPosts.map((post) => (
+                    {displayPosts.map((post) => (
                       <button 
                         key={post.id}
                         onClick={() => setSelectedPostId(post.id)}
@@ -681,7 +1001,7 @@ export default function Ads() {
                           ƯỚC TÍNH TIẾP CẬN
                         </h3>
                         <div className="text-2xl font-black text-primary mb-6">
-                          12.000 - 18.000<br/><span className="text-base font-bold text-on-surface-variant">người</span>
+                          {reachEstimate.replace(' người', '')}<br/><span className="text-base font-bold text-on-surface-variant">người</span>
                         </div>
                         
                         <div className="relative w-32 h-16 mx-auto mb-2 overflow-hidden">
@@ -722,10 +1042,10 @@ export default function Ads() {
                       <span className="text-sm font-bold text-on-surface-variant">Bài đăng</span>
                       <div className="flex items-center gap-3 max-w-[60%] text-right">
                         <span className="text-sm font-medium text-on-surface truncate">
-                          {mockAdsPosts.find(p => p.id === selectedPostId)?.content || "Bài viết chưa chọn"}
+                          {displayPosts.find(p => p.id === selectedPostId)?.content || "Bài viết chưa chọn"}
                         </span>
                         <div className="w-10 h-10 bg-surface-variant rounded shrink-0 flex items-center justify-center">
-                          {mockAdsPosts.find(p => p.id === selectedPostId)?.hasImage ? (
+                          {displayPosts.find(p => p.id === selectedPostId)?.hasImage ? (
                             <span className="material-symbols-outlined text-on-surface-variant/50 text-[20px]">image</span>
                           ) : (
                             <span className="material-symbols-outlined text-on-surface-variant/50 text-[20px]">article</span>
@@ -757,7 +1077,7 @@ export default function Ads() {
 
                     <div className="flex items-center justify-between p-4">
                       <span className="text-sm font-bold text-on-surface-variant">Ước tính tiếp cận</span>
-                      <span className="text-sm font-bold text-primary bg-primary/10 px-2.5 py-1 rounded-md">12.000 - 18.000 người</span>
+                      <span className="text-sm font-bold text-primary bg-primary/10 px-2.5 py-1 rounded-md">{reachEstimate}</span>
                     </div>
                   </div>
 
@@ -780,7 +1100,8 @@ export default function Ads() {
                       Quay lại chỉnh sửa
                     </button>
                     <button 
-                      onClick={() => setIsSuccess(true)}
+                      onClick={handleLaunchBoost}
+                      disabled={busy}
                       className="w-full py-3.5 px-4 bg-primary text-on-primary font-bold text-lg rounded-xl shadow-[0_4px_25px_rgba(0,229,255,0.4)] hover:scale-[1.02] transition-transform"
                     >
                       Xác nhận và chạy
@@ -956,10 +1277,11 @@ export default function Ads() {
                 Hủy
               </button>
               <button 
-                onClick={() => setIsAudienceFlowOpen(false)}
-                className="flex-1 py-3 px-4 bg-primary text-on-primary font-bold rounded-xl shadow-[0_4px_15px_rgba(0,229,255,0.4)] hover:scale-105 transition-transform"
+                onClick={handleCreateAudience}
+                disabled={busy}
+                className="flex-1 py-3 px-4 bg-primary text-on-primary font-bold rounded-xl shadow-[0_4px_15px_rgba(0,229,255,0.4)] hover:scale-105 transition-transform disabled:opacity-60 disabled:hover:scale-100"
               >
-                Tạo tệp
+                {busy ? 'Đang tạo…' : 'Tạo tệp'}
               </button>
             </div>
 
