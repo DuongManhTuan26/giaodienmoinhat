@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import { clsx } from 'clsx';
 
-export default function Sidebar() {
+export default function Sidebar({ onLogout }: { onLogout?: () => void }) {
   const group1 = [
     { name: 'Bảng Điều Khiển', icon: 'dashboard', path: '/' },
     { name: 'Kết Nối Đa Nền Tảng', icon: 'cable', path: '/connections' },
@@ -172,9 +172,9 @@ export default function Sidebar() {
               </span> 
               <span className="whitespace-nowrap group-hover:text-white transition-colors">Trợ giúp</span>
             </a>
-            <a 
-              className="flex items-center gap-3 px-3 rounded-lg hover:bg-[#ef4444]/10 hover:text-[#ef4444] transition-colors group shrink-0" 
-              href="#" 
+            <button 
+              className="flex items-center gap-3 px-3 rounded-lg hover:bg-[#ef4444]/10 hover:text-[#ef4444] transition-colors group shrink-0 w-full text-left" 
+              onClick={onLogout}
               style={{ 
                 color: 'rgba(232,237,242,0.4)', 
                 fontSize: '13px', 
@@ -190,7 +190,7 @@ export default function Sidebar() {
                 logout
               </span> 
               <span className="whitespace-nowrap transition-colors">Đăng xuất</span>
-            </a>
+            </button>
           </div>
         </div>
       </div>

@@ -7,6 +7,9 @@ import { errorHandler } from "./http.js";
 import { authRouter } from "./routes/auth.js";
 import { connectionsRouter } from "./routes/connections.js";
 import { webhooksRouter } from "./routes/webhooks.js";
+import { inboxRouter } from "./routes/inbox.js";
+import { dashboardRouter } from "./routes/dashboard.js";
+import { ordersRouter } from "./routes/orders.js";
 
 export async function createApp() {
   const app = express();
@@ -30,6 +33,9 @@ export async function createApp() {
 
   app.use("/api/auth", authRouter);
   app.use("/api/connections", connectionsRouter);
+  app.use("/api/inbox", inboxRouter);
+  app.use("/api/dashboard", dashboardRouter);
+  app.use("/api/orders", ordersRouter);
 
   // Bất kỳ đường dẫn /api nào không khớp đều trả JSON, không trả trang HTML.
   app.use("/api", (_req, res) => {

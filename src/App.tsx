@@ -1,5 +1,5 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Sidebar from './components/Sidebar';
 import TopNavBar from './components/TopNavBar';
 import Dashboard from './pages/Dashboard';
@@ -15,18 +15,80 @@ import Analytics from './pages/Analytics';
 import Auth from './pages/Auth';
 import Onboarding from './pages/Onboarding';
 import SetupComplete from './pages/SetupComplete';
+import { api, ApiError, type User } from './lib/api';
 
-type AppState = 'auth' | 'onboarding' | 'setup_complete' | 'main';
+type AppState = 'loading' | 'auth' | 'onboarding' | 'setup_complete' | 'main';
 
 export default function App() {
-  const [appState, setAppState] = useState<AppState>('auth');
+  const [appState, setAppState] = useState<AppState>('loading');
+  const [user, setUser] = useState<User | null>(null);
+
+  // Kiểm tra phiên hiện có khi mở trang. Người dùng đã đăng nhập rồi thì
+  // không bắt đăng nhập lại mỗi lần tải lại trang.
+  useEffect(() => {
+    let cancelled = false;
+
+    api.auth
+      .me()
+      .then(({ user }) => {
+        if (cancelled) return;
+        setUser(user);
+        setAppState('main');
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        if (!(error instanceof ApiError) || !error.isUnauthorized) {
+          console.error('Không kiểm tra được phiên đăng nhập:', error);
+        }
+        setAppState('auth');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await api.auth.logout();
+    } catch (error) {
+      console.error('Đăng xuất thất bại:', error);
+    }
+    setUser(null);
+    setAppState('auth');
+  }, []);
+
+  if (appState === 'loading') {
+    return (
+      <div className="h-screen w-full flex flex-col items-center justify-center bg-background gap-4">
+        <div className="w-10 h-10 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+        <p className="font-body-md text-on-surface-variant">Đang tải hệ thống…</p>
+      </div>
+    );
+  }
 
   if (appState === 'auth') {
-    return <Auth onLogin={() => setAppState('main')} onRegister={() => setAppState('onboarding')} />;
+    return (
+      <Auth
+        onLogin={(loggedIn) => {
+          setUser(loggedIn);
+          setAppState('main');
+        }}
+        onRegister={(registered) => {
+          setUser(registered);
+          setAppState('onboarding');
+        }}
+      />
+    );
   }
 
   if (appState === 'onboarding') {
-    return <Onboarding onComplete={() => setAppState('setup_complete')} onSkip={() => setAppState('main')} />;
+    return (
+      <Onboarding
+        onComplete={() => setAppState('setup_complete')}
+        onSkip={() => setAppState('main')}
+      />
+    );
   }
 
   if (appState === 'setup_complete') {
@@ -35,9 +97,9 @@ export default function App() {
 
   return (
     <div className="flex h-screen w-full bg-background">
-      <Sidebar />
+      <Sidebar onLogout={handleLogout} />
       <div className="flex-1 ml-72 flex flex-col h-screen relative">
-        <TopNavBar />
+        <TopNavBar user={user} />
         <main className="flex-1 overflow-y-auto custom-scrollbar pt-16">
           <Routes>
             <Route path="/" element={<Dashboard />} />
@@ -50,7 +112,6 @@ export default function App() {
             <Route path="/connections" element={<Connections />} />
             <Route path="/pricing" element={<Pricing />} />
             <Route path="/analytics" element={<Analytics />} />
-            {/* Default fallback */}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>

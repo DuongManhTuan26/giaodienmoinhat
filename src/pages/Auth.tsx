@@ -1,23 +1,47 @@
 import React, { useState } from 'react';
+import { api, ApiError, type User } from '../lib/api';
 
-export default function Auth({ onLogin, onRegister }: { onLogin: () => void, onRegister: () => void }) {
+export default function Auth({ onLogin, onRegister }: {
+  onLogin: (user: User) => void,
+  onRegister: (user: User) => void,
+}) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const formData = new FormData(e.target as HTMLFormElement);
-    const password = formData.get('password') as string;
+    if (busy) return;
 
-    if (mode === 'login') {
-      // Demo logic: fail if password is exactly "wrong"
-      if (password === 'wrong') {
-        setError('Email hoặc mật khẩu không đúng');
-        return;
+    const formData = new FormData(e.target as HTMLFormElement);
+    const email = String(formData.get('email') ?? '').trim();
+    const password = String(formData.get('password') ?? '');
+    const name = String(formData.get('name') ?? '').trim();
+
+    setError('');
+    setBusy(true);
+
+    try {
+      if (mode === 'login') {
+        const { user } = await api.auth.login(email, password);
+        onLogin(user);
+      } else {
+        const confirm = String(formData.get('confirmPassword') ?? '');
+        if (confirm && confirm !== password) {
+          setError('Mật khẩu nhập lại không khớp');
+          return;
+        }
+        const { user } = await api.auth.register(email, password, name);
+        onRegister(user);
       }
-      onLogin();
-    } else {
-      onRegister();
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Không kết nối được máy chủ. Kiểm tra lại đường truyền.'
+      );
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -52,6 +76,19 @@ export default function Auth({ onLogin, onRegister }: { onLogin: () => void, onR
         </div>
 
         <form onSubmit={handleSubmit} className="p-md flex flex-col gap-4">
+          {mode === 'register' && (
+            <div className="flex flex-col gap-1.5">
+              <label className="font-label-sm text-on-surface">Tên shop</label>
+              <input
+                type="text"
+                name="name"
+                required
+                className="w-full bg-surface-container-high border border-outline focus:border-primary rounded-lg px-4 py-3 text-on-surface outline-none transition-colors"
+                placeholder="Ví dụ: Thời Trang Minh Anh"
+              />
+            </div>
+          )}
+
           <div className="flex flex-col gap-1.5">
             <label className="font-label-sm text-on-surface">Email</label>
             <input 
@@ -75,26 +112,40 @@ export default function Auth({ onLogin, onRegister }: { onLogin: () => void, onR
               className={`w-full bg-surface-container-high border ${error ? 'border-error' : 'border-outline focus:border-primary'} rounded-lg px-4 py-3 text-on-surface outline-none transition-colors`} 
               placeholder="••••••••" 
             />
-            {error && mode === 'login' && <p className="text-error font-body-md text-sm mt-1">{error}</p>}
+            {mode === 'register' && (
+              <p className="font-body-md text-xs text-on-surface-variant mt-1">
+                Tối thiểu 8 ký tự.
+              </p>
+            )}
           </div>
 
           {mode === 'register' && (
             <div className="flex flex-col gap-1.5">
               <label className="font-label-sm text-on-surface">Nhập lại mật khẩu</label>
-              <input 
-                type="password" 
-                required 
-                className="w-full bg-surface-container-high border border-outline focus:border-primary rounded-lg px-4 py-3 text-on-surface outline-none transition-colors" 
-                placeholder="••••••••" 
+              <input
+                type="password"
+                name="confirmPassword"
+                required
+                className="w-full bg-surface-container-high border border-outline focus:border-primary rounded-lg px-4 py-3 text-on-surface outline-none transition-colors"
+                placeholder="••••••••"
               />
             </div>
           )}
 
-          <button 
-            type="submit" 
-            className="w-full py-4 bg-gradient-to-r from-primary to-primary-container text-on-primary font-label-sm rounded-lg shadow-[0_0_15px_rgba(0,229,255,0.4)] hover:shadow-[0_0_25px_rgba(0,229,255,0.6)] hover:brightness-110 transition-all font-bold mt-2 text-lg"
+          {error && (
+            <p className="text-error font-body-md text-sm bg-error/10 border border-error/30 rounded-lg px-4 py-3">
+              {error}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={busy}
+            className="w-full py-4 bg-gradient-to-r from-primary to-primary-container text-on-primary font-label-sm rounded-lg shadow-[0_0_15px_rgba(0,229,255,0.4)] hover:shadow-[0_0_25px_rgba(0,229,255,0.6)] hover:brightness-110 transition-all font-bold mt-2 text-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none"
           >
-            {mode === 'login' ? 'Đăng nhập' : 'Tạo tài khoản'}
+            {busy
+              ? (mode === 'login' ? 'Đang đăng nhập…' : 'Đang tạo tài khoản…')
+              : (mode === 'login' ? 'Đăng nhập' : 'Tạo tài khoản')}
           </button>
 
           {mode === 'register' && (

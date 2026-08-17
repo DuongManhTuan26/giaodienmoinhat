@@ -220,6 +220,76 @@ connectionsRouter.post(
   })
 );
 
+/**
+ * Các hồ sơ Zernio chưa có shop nào nhận.
+ *
+ * Dành cho người đã dùng Zernio trước khi đăng ký hệ thống này: thay vì bắt
+ * họ kết nối lại từ đầu, cho phép nhận luôn hồ sơ đang có kèm tài khoản.
+ */
+connectionsRouter.get(
+  "/available-profiles",
+  route(async (req, res) => {
+    const profiles = await zernio.listProfiles();
+
+    const claimed = await query<{ zernio_profile_id: string }>(
+      `SELECT zernio_profile_id FROM users
+        WHERE zernio_profile_id IS NOT NULL AND id <> $1`,
+      [req.user!.id]
+    );
+    const claimedIds = new Set(claimed.rows.map((row) => row.zernio_profile_id));
+
+    const accounts = await zernio.listAccounts();
+    const countByProfile = new Map<string, number>();
+    for (const account of accounts) {
+      const profileId = zernio.accountProfileId(account);
+      if (profileId) {
+        countByProfile.set(profileId, (countByProfile.get(profileId) ?? 0) + 1);
+      }
+    }
+
+    res.json({
+      success: true,
+      data: profiles
+        .filter((profile) => !claimedIds.has(profile._id))
+        .map((profile) => ({
+          id: profile._id,
+          name: profile.name,
+          accountCount: countByProfile.get(profile._id) ?? 0,
+          isCurrent: profile._id === req.user!.zernioProfileId,
+        })),
+    });
+  })
+);
+
+connectionsRouter.post(
+  "/adopt-profile",
+  route(async (req, res) => {
+    const profileId = requireString(req.body, "profileId", "hồ sơ");
+
+    // Hồ sơ đã thuộc về shop khác thì tuyệt đối không cho nhận, nếu không
+    // hai shop sẽ cùng đọc được tin nhắn của nhau.
+    const taken = await queryOne(
+      `SELECT id FROM users WHERE zernio_profile_id = $1 AND id <> $2`,
+      [profileId, req.user!.id]
+    );
+    if (taken) {
+      throw new AppError("Hồ sơ này đã được một tài khoản khác sử dụng", 409);
+    }
+
+    const profiles = await zernio.listProfiles();
+    if (!profiles.some((profile) => profile._id === profileId)) {
+      throw new AppError("Không tìm thấy hồ sơ này trên Zernio", 404);
+    }
+
+    await query("UPDATE users SET zernio_profile_id = $1, updated_at = now() WHERE id = $2", [
+      profileId,
+      req.user!.id,
+    ]);
+
+    res.json({ success: true, profileId });
+  })
+);
+
 connectionsRouter.delete(
   "/accounts/:id",
   route(async (req, res) => {
