@@ -1,19 +1,81 @@
-import React, { useState } from 'react';
-import { mockPricingPlans, mockAccountSafety, mockFacebookRules } from '../data/mockApi';
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { api, ApiError } from '../lib/api';
+import { PRICING_PLANS, PLATFORM_RULES, type PricingPlan } from '../lib/pricing';
 
 export default function Pricing() {
-  const [plans, setPlans] = useState(mockPricingPlans);
-  const [safetyMetrics, setSafetyMetrics] = useState(mockAccountSafety);
-  const [facebookRules, setFacebookRules] = useState(mockFacebookRules);
+  const navigate = useNavigate();
 
-  const currentPlan = plans.find(p => p.isCurrent) || plans[1];
-  const [safetyStatus, setSafetyStatus] = useState<'safe'|'warning'|'danger'>('safe');
+  const [plan, setPlan] = useState('trial');
+  const [usage, setUsage] = useState({
+    connected_accounts: 0, ai_messages_month: 0, tokens_month: 0,
+    orders_month: 0, posts_month: 0,
+  });
+  const [safety, setSafety] = useState<{
+    status: 'safe' | 'warning' | 'danger';
+    sendRatePerMinute: number;
+    sendRateLimit: number;
+    messagesSent30d: number;
+    messagesFailed30d: number;
+    failRate: number;
+    handoffRate: number;
+    avgAiResponseSeconds: number | null;
+    blockRateNote: string;
+  } | null>(null);
+  const [errorMessage, setErrorMessage] = useState('');
+
+  useEffect(() => {
+    Promise.all([api.settings.usage(), api.settings.safety()])
+      .then(([u, s]) => {
+        setPlan(u.data.plan);
+        setUsage(u.data.usage);
+        setSafety(s.data);
+      })
+      .catch((error) => {
+        setErrorMessage(error instanceof ApiError ? error.message : 'Không tải được thông tin gói');
+      });
+  }, []);
+
+  /** Gói đang dùng, đối chiếu với gói lưu trong database. */
+  const plans: PricingPlan[] = PRICING_PLANS.map((p) => ({
+    ...p,
+    isCurrent: p.id === plan,
+    buttonText: p.id === plan ? 'Gói hiện tại' : p.buttonText,
+  }));
+
+  const currentPlan = plans.find((p) => p.isCurrent) ?? plans[0];
+  const maxChannels = currentPlan.maxChannels;
+  const usedChannels = usage.connected_accounts;
+  const channelPercent = maxChannels > 0
+    ? Math.min(100, Math.round((usedChannels / maxChannels) * 100))
+    : 0;
+
+  const safetyStatus = safety?.status ?? 'safe';
+  const facebookRules = PLATFORM_RULES;
+
+  /**
+   * Nâng cấp gói và xem hoá đơn đều cần cổng thanh toán, chưa nối vào hệ thống.
+   * Báo rõ thay vì để nút bấm không phản ứng gì.
+   */
+  const handleUpgrade = (planId?: string) => {
+    setErrorMessage(
+      planId && planId !== plan
+        ? `Đổi sang gói "${plans.find((p) => p.id === planId)?.name}" cần cổng thanh toán, phần này chưa được nối. Hãy liên hệ để được đổi gói thủ công.`
+        : 'Cổng thanh toán chưa được nối vào hệ thống.'
+    );
+  };
 
   return (
     <div className="flex-1   p-gutter  bg-background relative">
+      {errorMessage && (
+        <div className="mb-md text-sm text-error bg-error/10 border border-error/30 rounded-xl px-4 py-3 max-w-5xl mx-auto">
+          {errorMessage}
+        </div>
+      )}
+
       {/* Header */}
       <div className="mb-lg">
-        <span className="font-mono text-xs font-bold tracking-wider text-primary bg-primary/10 border border-primary/20 px-2.5 py-1 rounded-full uppercase mb-3 inline-block">GÓI CHUYÊN NGHIỆP</span>
+        <span className="font-mono text-xs font-bold tracking-wider text-primary bg-primary/10 border border-primary/20 px-2.5 py-1 rounded-full uppercase mb-3 inline-block">{currentPlan.name.toUpperCase()}</span>
         <p className="font-body-lg text-on-surface-variant max-w-2xl mt-1">Quản lý gói dịch vụ và theo dõi an toàn tài khoản</p>
       </div>
 
@@ -25,25 +87,25 @@ export default function Pricing() {
             <span className="font-label-sm text-primary tracking-widest uppercase mb-1">GÓI ĐANG DÙNG</span>
             <h3 className="font-display-lg text-on-surface">{currentPlan.name}</h3>
             <p className="font-body-lg text-primary font-bold">{currentPlan.price.replace('/tháng', ' mỗi tháng')}</p>
-            <p className="font-body-md text-on-surface-variant mt-2">Gia hạn tự động ngày 10/09/2026</p>
+            <p className="font-body-md text-on-surface-variant mt-2">{plan === 'trial' ? 'Đang dùng thử' : 'Gia hạn tự động hằng tháng'}</p>
           </div>
           {/* Middle */}
           <div className="flex flex-col min-w-[220px] md:col-span-3">
             <span className="font-label-sm text-on-surface-variant tracking-widest uppercase mb-2 whitespace-nowrap">SỐ KÊNH ĐÃ KẾT NỐI</span>
             <div className="flex items-baseline gap-2 whitespace-nowrap">
-              <span className="font-display-lg text-primary">2</span>
+              <span className="font-display-lg text-primary">{usedChannels}</span>
               <span className="font-display-lg text-on-surface-variant">/</span>
-              <span className="font-display-lg text-on-surface-variant">3</span>
+              <span className="font-display-lg text-on-surface-variant">{maxChannels}</span>
             </div>
             <div className="w-full h-2 bg-surface-container rounded-full mt-3 overflow-hidden">
-              <div className="h-full bg-primary shadow-[0_0_10px_rgba(0,229,255,0.8)]" style={{ width: '66%' }}></div>
+              <div className="h-full bg-primary shadow-[0_0_10px_rgba(0,229,255,0.8)]" style={{ width: `${channelPercent}%` }}></div>
             </div>
             <p className="font-body-md text-on-surface-variant mt-2 whitespace-nowrap">Còn 1 lượt kết nối</p>
           </div>
           {/* Right */}
           <div className="flex flex-col gap-sm md:col-span-3 w-full">
-            <button className="w-full py-3 bg-gradient-to-r from-primary to-primary-container text-on-primary font-label-sm rounded-lg shadow-[0_0_15px_rgba(0,229,255,0.4)] hover:shadow-[0_0_25px_rgba(0,229,255,0.6)] hover:brightness-110 transition-all font-bold">Nâng cấp gói</button>
-            <button className="w-full py-3 bg-surface-container text-on-surface font-label-sm rounded-lg border border-outline hover:border-primary transition-colors font-bold">Xem hóa đơn</button>
+            <button className="w-full py-3 bg-gradient-to-r from-primary to-primary-container text-on-primary font-label-sm rounded-lg shadow-[0_0_15px_rgba(0,229,255,0.4)] hover:shadow-[0_0_25px_rgba(0,229,255,0.6)] hover:brightness-110 transition-all font-bold" onClick={() => handleUpgrade()}>Nâng cấp gói</button>
+            <button className="w-full py-3 bg-surface-container text-on-surface font-label-sm rounded-lg border border-outline hover:border-primary transition-colors font-bold" onClick={() => handleUpgrade()}>Xem hóa đơn</button>
           </div>
         </div>
 
@@ -93,6 +155,7 @@ export default function Pricing() {
                       : 'bg-surface-container-high text-on-surface border border-outline hover:border-primary'
                 }`}
                 disabled={plan.isCurrent}
+                onClick={() => handleUpgrade(plan.id)}
               >
                 {plan.buttonText}
               </button>
@@ -139,6 +202,13 @@ export default function Pricing() {
             )}
           </div>
 
+          {safety?.blockRateNote && (
+            <p className="text-xs text-on-surface-variant/70 mb-4 flex items-start gap-1.5">
+              <span className="material-symbols-outlined text-[14px] mt-0.5">info</span>
+              <span>{safety.blockRateNote}</span>
+            </p>
+          )}
+
           {/* Metrics */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {/* Tỷ lệ khách chặn */}
@@ -146,13 +216,13 @@ export default function Pricing() {
                <div className="relative w-[80px] h-[80px] flex items-center justify-center shrink-0">
                   <svg className="w-[80px] h-[80px] transform -rotate-90">
                     <circle cx="40" cy="40" r="34" stroke="currentColor" strokeWidth="6" fill="transparent" className="text-surface-container-highest" />
-                    <circle cx="40" cy="40" r="34" stroke="currentColor" strokeWidth="6" fill="transparent" strokeDasharray="213.6" strokeDashoffset={213.6 * (1 - 0.4)} className="text-[#10b981]" strokeLinecap="round" />
+                    <circle cx="40" cy="40" r="34" stroke="currentColor" strokeWidth="6" fill="transparent" strokeDasharray="213.6" strokeDashoffset={213.6 * (1 - (safety ? Math.min(1, safety.handoffRate / 100) : 0))} className="text-[#10b981]" strokeLinecap="round" />
                   </svg>
-                  <span className="absolute font-label-sm text-on-surface font-bold text-[13px] whitespace-nowrap">0,8%</span>
+                  <span className="absolute font-label-sm text-on-surface font-bold text-[13px] whitespace-nowrap">{safety ? `${safety.handoffRate}%` : '—'}</span>
                </div>
                <div>
-                 <p className="font-body-md text-on-surface font-bold">Tỷ lệ khách chặn</p>
-                 <p className="font-body-md text-on-surface-variant text-sm mt-0.5">Ngưỡng an toàn dưới 2%</p>
+                 <p className="font-body-md text-on-surface font-bold">Tỷ lệ nhường quyền</p>
+                 <p className="font-body-md text-on-surface-variant text-sm mt-0.5">Phần hội thoại AI phải chuyển cho người</p>
                </div>
             </div>
 
@@ -161,13 +231,13 @@ export default function Pricing() {
                <div className="relative w-[80px] h-[80px] flex items-center justify-center shrink-0">
                   <svg className="w-[80px] h-[80px] transform -rotate-90">
                     <circle cx="40" cy="40" r="34" stroke="currentColor" strokeWidth="6" fill="transparent" className="text-surface-container-highest" />
-                    <circle cx="40" cy="40" r="34" stroke="currentColor" strokeWidth="6" fill="transparent" strokeDasharray="213.6" strokeDashoffset={213.6 * (1 - 0.6)} className="text-[#f59e0b]" strokeLinecap="round" />
+                    <circle cx="40" cy="40" r="34" stroke="currentColor" strokeWidth="6" fill="transparent" strokeDasharray="213.6" strokeDashoffset={213.6 * (1 - (safety ? Math.min(1, safety.sendRatePerMinute / safety.sendRateLimit) : 0))} className="text-[#f59e0b]" strokeLinecap="round" />
                   </svg>
-                  <span className="absolute font-label-sm text-on-surface font-bold text-[13px] whitespace-nowrap">12/phút</span>
+                  <span className="absolute font-label-sm text-on-surface font-bold text-[13px] whitespace-nowrap">{safety ? `${safety.sendRatePerMinute}/phút` : '—'}</span>
                </div>
                <div>
                  <p className="font-body-md text-on-surface font-bold">Tốc độ gửi tin</p>
-                 <p className="font-body-md text-on-surface-variant text-sm mt-0.5">Giới hạn 20 tin mỗi phút</p>
+                 <p className="font-body-md text-on-surface-variant text-sm mt-0.5">Giới hạn {safety?.sendRateLimit ?? 20} tin mỗi phút</p>
                </div>
             </div>
 
@@ -176,13 +246,15 @@ export default function Pricing() {
                <div className="relative w-[80px] h-[80px] flex items-center justify-center shrink-0">
                   <svg className="w-[80px] h-[80px] transform -rotate-90">
                     <circle cx="40" cy="40" r="34" stroke="currentColor" strokeWidth="6" fill="transparent" className="text-surface-container-highest" />
-                    <circle cx="40" cy="40" r="34" stroke="currentColor" strokeWidth="6" fill="transparent" strokeDasharray="213.6" strokeDashoffset={213.6 * (1 - 0.3)} className="text-[#10b981]" strokeLinecap="round" />
+                    <circle cx="40" cy="40" r="34" stroke="currentColor" strokeWidth="6" fill="transparent" strokeDasharray="213.6" strokeDashoffset={213.6 * (1 - (safety ? Math.min(1, safety.failRate / 10) : 0))} className={safety && safety.failRate >= 3 ? "text-[#f59e0b]" : "text-[#10b981]"} strokeLinecap="round" />
                   </svg>
-                  <span className="absolute font-label-sm text-on-surface font-bold text-[13px] whitespace-nowrap">3 tin</span>
+                  <span className="absolute font-label-sm text-on-surface font-bold text-[13px] whitespace-nowrap">{safety ? `${safety.messagesFailed30d} tin` : '—'}</span>
                </div>
                <div>
                  <p className="font-body-md text-on-surface font-bold">Tin bị từ chối</p>
-                 <p className="font-body-md text-on-surface-variant text-sm mt-0.5">Trong 7 ngày qua</p>
+                 <p className="font-body-md text-on-surface-variant text-sm mt-0.5">
+                   {safety ? `${safety.failRate}% trong 30 ngày qua` : 'Trong 30 ngày qua'}
+                 </p>
                </div>
             </div>
           </div>

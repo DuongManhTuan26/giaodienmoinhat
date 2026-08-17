@@ -266,6 +266,94 @@ settingsRouter.get(
   })
 );
 
+/**
+ * Chỉ số an toàn tài khoản.
+ *
+ * Chỉ báo những gì đo được thật. Tỷ lệ khách chặn không nằm trong bất kỳ API
+ * nào của Meta hay Zernio, nên trả về null kèm lý do thay vì bịa một con số —
+ * đây là chỉ số người dùng dựa vào để quyết định có tiếp tục cho AI chạy hay
+ * không, bịa số ở đây là dẫn họ tới chỗ mất tài khoản.
+ */
+settingsRouter.get(
+  "/safety",
+  route(async (req, res) => {
+    const userId = req.user!.id;
+
+    const row = await queryOne<Record<string, number>>(
+      `SELECT
+         (SELECT COUNT(*) FROM messages
+           WHERE user_id = $1 AND sender_type IN ('ai','human')
+             AND sent_at >= now() - interval '1 hour')                     AS sent_last_hour,
+         (SELECT COUNT(*) FROM messages
+           WHERE user_id = $1 AND sender_type IN ('ai','human')
+             AND sent_at >= now() - interval '30 days')                    AS sent_30d,
+         (SELECT COUNT(*) FROM webhook_events
+           WHERE event_type = 'message.failed'
+             AND account_id IN (SELECT id FROM social_accounts WHERE user_id = $1)
+             AND received_at >= now() - interval '30 days')                AS failed_30d,
+         (SELECT COUNT(*) FROM conversations
+           WHERE user_id = $1 AND handoff_at >= now() - interval '30 days') AS handoffs_30d,
+         (SELECT COUNT(*) FROM conversations
+           WHERE user_id = $1 AND created_at >= now() - interval '30 days') AS conversations_30d`,
+      [userId]
+    );
+
+    // Thời gian AI trả lời trung bình: khoảng cách giữa tin của khách và tin
+    // AI trả lời ngay sau đó trong cùng hội thoại.
+    const responseTime = await queryOne<{ avg_seconds: number | null }>(
+      `WITH pairs AS (
+         SELECT m.sent_at AS customer_at,
+                LEAD(m.sent_at) OVER (PARTITION BY m.conversation_id ORDER BY m.sent_at) AS next_at,
+                m.sender_type,
+                LEAD(m.sender_type) OVER (PARTITION BY m.conversation_id ORDER BY m.sent_at) AS next_type
+           FROM messages m
+          WHERE m.user_id = $1 AND m.sent_at >= now() - interval '30 days'
+       )
+       SELECT AVG(EXTRACT(EPOCH FROM (next_at - customer_at)))::numeric AS avg_seconds
+         FROM pairs
+        WHERE sender_type = 'customer' AND next_type = 'ai'`,
+      [userId]
+    );
+
+    const sentLastHour = Number(row?.sent_last_hour ?? 0);
+    const sent30d = Number(row?.sent_30d ?? 0);
+    const failed30d = Number(row?.failed_30d ?? 0);
+    const conversations = Number(row?.conversations_30d ?? 0);
+    const handoffs = Number(row?.handoffs_30d ?? 0);
+
+    // Meta giới hạn nhịp gửi tin. Quy đổi về số tin mỗi phút trong giờ vừa rồi.
+    const perMinute = Number((sentLastHour / 60).toFixed(1));
+
+    const failRate = sent30d > 0 ? (failed30d / sent30d) * 100 : 0;
+    const handoffRate = conversations > 0 ? (handoffs / conversations) * 100 : 0;
+
+    // Trạng thái chung: chỉ dựa trên chỉ số đo được thật.
+    let status: "safe" | "warning" | "danger" = "safe";
+    if (failRate >= 10 || perMinute >= 20) status = "danger";
+    else if (failRate >= 3 || perMinute >= 12) status = "warning";
+
+    res.json({
+      success: true,
+      data: {
+        status,
+        sendRatePerMinute: perMinute,
+        sendRateLimit: 20,
+        messagesSent30d: sent30d,
+        messagesFailed30d: failed30d,
+        failRate: Number(failRate.toFixed(1)),
+        handoffRate: Number(handoffRate.toFixed(1)),
+        avgAiResponseSeconds:
+          responseTime?.avg_seconds != null ? Math.round(Number(responseTime.avg_seconds)) : null,
+        /** Meta không mở dữ liệu này qua bất kỳ API nào. */
+        blockRate: null,
+        blockRateNote:
+          "Meta không cung cấp tỷ lệ khách chặn qua API, nên hệ thống không thể " +
+          "đo chỉ số này. Hãy theo dõi trong Trình quản lý trang của Facebook.",
+      },
+    });
+  })
+);
+
 // ---------------------------------------------------------------------------
 // Số liệu quảng cáo, lấy từ Zernio
 // ---------------------------------------------------------------------------

@@ -432,6 +432,22 @@ export const api = {
     }) => request<{ data: unknown }>("/settings/telegram", { method: "PUT", body: payload }),
     testTelegram: () => post<{ message: string }>("/settings/telegram/test"),
 
+    safety: () =>
+      get<{
+        data: {
+          status: 'safe' | 'warning' | 'danger';
+          sendRatePerMinute: number;
+          sendRateLimit: number;
+          messagesSent30d: number;
+          messagesFailed30d: number;
+          failRate: number;
+          handoffRate: number;
+          avgAiResponseSeconds: number | null;
+          blockRate: null;
+          blockRateNote: string;
+        };
+      }>("/settings/safety"),
+
     usage: () =>
       get<{
         data: {
