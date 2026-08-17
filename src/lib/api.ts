@@ -73,14 +73,46 @@ export interface User {
   zernioProfileId: string | null;
 }
 
+export interface PlatformPermission {
+  icon: string;
+  name: string;
+  desc: string;
+}
+
 export interface Platform {
   id: string;
   name: string;
+  icon: string;
+  /** Định danh gửi cho Zernio; null nghĩa là chưa kết nối được qua hệ thống. */
+  zernioPlatform: string | null;
   canPost: boolean;
-  /** Nền tảng có hỗ trợ đủ tin nhắn/bình luận để AI chốt đơn hay không. */
-  canSell: boolean;
-  features: readonly string[];
-  note: string | null;
+  /** Có tin nhắn riêng — điều kiện để AI chạy trọn vòng bán hàng và chốt đơn. */
+  canDm: boolean;
+  canComment: boolean;
+  capabilityNote?: string;
+  connectionType: string;
+  selectionLabel?: string;
+  publishOnly?: boolean;
+  warnings?: string[];
+  instructions?: string[];
+  requestedPermissions?: PlatformPermission[];
+  /** Trạng thái thật của người dùng đang đăng nhập. */
+  connectable: boolean;
+  connected: boolean;
+  needsReconnection: boolean;
+  accountCount: number;
+  accounts: Array<{
+    id: string;
+    name: string;
+    connected: boolean;
+    needsReconnection: boolean;
+  }>;
+}
+
+export interface PlatformCatalog {
+  social: Platform[];
+  ads: Platform[];
+  communication: Platform[];
 }
 
 export interface SocialAccount {
@@ -178,13 +210,19 @@ export const api = {
   },
 
   connections: {
-    platforms: () => get<{ data: Platform[] }>("/connections/platforms"),
+    platforms: () => get<{ data: PlatformCatalog }>("/connections/platforms"),
     accounts: () => get<{ data: SocialAccount[] }>("/connections/accounts"),
     sync: () => post<{ synced: number; data: SocialAccount[] }>("/connections/sync"),
     connectUrl: (platform: string) =>
       post<{ url: string }>("/connections/connect-url", { platform }),
     disconnect: (accountId: string) =>
       del<{ success: boolean }>(`/connections/accounts/${encodeURIComponent(accountId)}`),
+    availableProfiles: () =>
+      get<{
+        data: Array<{ id: string; name: string; accountCount: number; isCurrent: boolean }>;
+      }>("/connections/available-profiles"),
+    adoptProfile: (profileId: string) =>
+      post<{ profileId: string }>("/connections/adopt-profile", { profileId }),
   },
 
   inbox: {

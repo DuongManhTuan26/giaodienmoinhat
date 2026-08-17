@@ -3,83 +3,78 @@ import { query, queryOne } from "../db.js";
 import { requireAuth } from "../auth.js";
 import { AppError, requireString, route } from "../http.js";
 import * as zernio from "../services/zernio.js";
+import {
+  socialChannels,
+  adChannels,
+  communicationChannels,
+  allChannels,
+  type PlatformChannel,
+} from "../platforms.js";
 
 export const connectionsRouter = Router();
 
 connectionsRouter.use(requireAuth);
 
 /**
- * Các nền tảng hệ thống hỗ trợ, kèm năng lực THẬT theo tài liệu Zernio.
+ * Danh mục kênh, kèm trạng thái kết nối thật của người dùng đang đăng nhập.
  *
- * `canSell` = chạy được trọn vòng AI bán hàng (đọc tin nhắn/bình luận + trả lời).
- * TikTok bị đánh dấu không bán được vì Zernio ghi rõ "no inbox features
- * available" — không DM, không bình luận, không webhook. Chỉ đăng bài.
+ * Giao diện vẽ lưới kênh từ đây, nên trạng thái "Đã kết nối" luôn phản ánh
+ * dữ liệu thật thay vì cờ ghi cứng trong mã.
  */
-export const SUPPORTED_PLATFORMS = [
-  {
-    id: "facebook",
-    name: "Facebook",
-    canPost: true,
-    canSell: true,
-    features: ["Tin nhắn", "Bình luận", "Đánh giá", "Đăng bài"],
-    note: null,
-  },
-  {
-    id: "instagram",
-    name: "Instagram",
-    canPost: true,
-    canSell: true,
-    features: ["Tin nhắn", "Bình luận (chỉ trả lời)", "Đăng bài"],
-    note: null,
-  },
-  {
-    id: "threads",
-    name: "Threads",
-    canPost: true,
-    canSell: false,
-    features: ["Bình luận (chỉ trả lời)", "Đăng bài"],
-    note: "Không có tin nhắn riêng, nên AI không chốt đơn được trên kênh này.",
-  },
-  {
-    id: "tiktok",
-    name: "TikTok",
-    canPost: true,
-    canSell: false,
-    features: ["Đăng bài"],
-    note:
-      "TikTok không mở API hộp thư. AI không đọc được tin nhắn hay bình luận, " +
-      "nên chỉ dùng để đăng bài.",
-  },
-  {
-    id: "youtube",
-    name: "YouTube",
-    canPost: true,
-    canSell: false,
-    features: ["Bình luận", "Đăng bài"],
-    note: "Không có tin nhắn riêng.",
-  },
-  {
-    id: "telegram",
-    name: "Telegram",
-    canPost: true,
-    canSell: true,
-    features: ["Tin nhắn", "Đăng bài"],
-    note: "Hoạt động qua bot, không có bình luận.",
-  },
-  {
-    id: "metaads",
-    name: "Meta Ads",
-    canPost: false,
-    canSell: false,
-    features: ["Quảng cáo", "Số liệu"],
-    note: "Tài khoản quảng cáo, dùng cho mục AI Quảng cáo.",
-  },
-] as const;
-
 connectionsRouter.get(
   "/platforms",
-  route(async (_req, res) => {
-    res.json({ success: true, data: SUPPORTED_PLATFORMS });
+  route(async (req, res) => {
+    const accounts = await query<{
+      id: string;
+      platform: string;
+      display_name: string;
+      connected: boolean;
+      needs_reconnection: boolean;
+    }>(
+      `SELECT id, platform, display_name, connected, needs_reconnection
+         FROM social_accounts WHERE user_id = $1`,
+      [req.user!.id]
+    );
+
+    const byPlatform = new Map<string, typeof accounts.rows>();
+    for (const account of accounts.rows) {
+      const list = byPlatform.get(account.platform) ?? [];
+      list.push(account);
+      byPlatform.set(account.platform, list);
+    }
+
+    const decorate = (channel: PlatformChannel) => {
+      const linked = channel.zernioPlatform
+        ? (byPlatform.get(channel.zernioPlatform) ?? [])
+        : [];
+      // Meta Ads không kết nối riêng — nó là tài khoản con của Facebook,
+      // nên trạng thái của nó đọc từ platform 'metaads' đã đồng bộ về.
+      const adLinked = channel.id === "fb_ads" ? (byPlatform.get("metaads") ?? []) : [];
+      const all = linked.length ? linked : adLinked;
+
+      return {
+        ...channel,
+        connectable: channel.zernioPlatform !== null,
+        connected: all.some((account) => account.connected),
+        needsReconnection: all.some((account) => account.needs_reconnection),
+        accountCount: all.length,
+        accounts: all.map((account) => ({
+          id: account.id,
+          name: account.display_name,
+          connected: account.connected,
+          needsReconnection: account.needs_reconnection,
+        })),
+      };
+    };
+
+    res.json({
+      success: true,
+      data: {
+        social: socialChannels.map(decorate),
+        ads: adChannels.map(decorate),
+        communication: communicationChannels.map(decorate),
+      },
+    });
   })
 );
 
@@ -200,9 +195,18 @@ connectionsRouter.post(
   route(async (req, res) => {
     const platform = requireString(req.body, "platform", "nền tảng");
 
-    const supported = SUPPORTED_PLATFORMS.find((p) => p.id === platform);
-    if (!supported) {
+    const channel = allChannels.find(
+      (item) => item.zernioPlatform === platform || item.id === platform
+    );
+    if (!channel) {
       throw new AppError(`Hệ thống chưa hỗ trợ nền tảng "${platform}"`);
+    }
+    if (!channel.zernioPlatform) {
+      throw new AppError(
+        channel.capabilityNote ??
+          `Kênh ${channel.name} chưa kết nối được qua hệ thống.`,
+        409
+      );
     }
 
     let profileId = req.user!.zernioProfileId;
@@ -215,7 +219,7 @@ connectionsRouter.post(
       ]);
     }
 
-    const url = await zernio.getConnectUrl(platform, profileId);
+    const url = await zernio.getConnectUrl(channel.zernioPlatform, profileId);
     res.json({ success: true, url });
   })
 );

@@ -1,138 +1,161 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { clsx } from 'clsx';
-import { connectedAccounts as mockConnectedAccounts, mockSubPagesToSelect, socialChannels, adChannels, communicationChannels } from '../data/mockApi';
+import { api, ApiError, type Platform, type SocialAccount } from '../lib/api';
+import { useActivePage } from '../lib/ActivePage';
 
 export default function Connections() {
-  const [bannerState, setBannerState] = useState<'normal' | 'warning' | 'danger'>('normal');
-  const [connectStep, setConnectStep] = useState(0); // 0 = closed, 1-4 = steps
-  const [selectedPlatform, setSelectedPlatform] = useState<{id: string, name: string, icon: string, connectionType?: string, selectionLabel?: string} | null>(null);
+  const { reload: reloadActivePages } = useActivePage();
+
+  const [connectStep, setConnectStep] = useState(0); // 0 = đóng, 1-4 = các bước
+  const [selectedPlatform, setSelectedPlatform] = useState<Platform | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [loginSuccess, setLoginSuccess] = useState(false);
   const [selectedPages, setSelectedPages] = useState<string[]>([]);
 
-  const [dbPages, setDbPages] = useState<any[]>([]);
+  const [catalog, setCatalog] = useState<{ social: Platform[]; ads: Platform[]; communication: Platform[] }>({
+    social: [], ads: [], communication: [],
+  });
+  const [accounts, setAccounts] = useState<SocialAccount[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [syncing, setSyncing] = useState(false);
 
-  const fetchPages = async () => {
+  const load = useCallback(async () => {
     try {
-      const response = await fetch('/api/zernio/pages');
-      const data = await response.json();
-      if (data.success) {
-        setDbPages(data.data);
-      }
+      const [platforms, accountList] = await Promise.all([
+        api.connections.platforms(),
+        api.connections.accounts(),
+      ]);
+      setCatalog(platforms.data);
+      setAccounts(accountList.data);
     } catch (error) {
-      console.error(error);
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không tải được danh sách kênh');
+    } finally {
+      setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchPages();
   }, []);
 
-  const handleFinishConnection = async () => {
-    if (selectedPlatform?.connectionType === 'oauth_with_selection') {
-      for (const pid of selectedPages) {
-        const pageDef = mockSubPagesToSelect.find(p => p.id === pid);
-        if (pageDef) {
-          await fetch('/api/zernio/pages', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: pageDef.id + '-' + Date.now(), name: pageDef.name, platform: selectedPlatform.id })
-          });
-        }
-      }
-    } else {
-      await fetch('/api/zernio/pages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: selectedPlatform!.id + '-' + Date.now(), name: selectedPlatform!.name + ' Account', platform: selectedPlatform!.id })
-      });
+  useEffect(() => { load(); }, [load]);
+
+  /** Kéo lại danh sách tài khoản từ Zernio rồi làm mới màn hình. */
+  const handleSync = async () => {
+    setSyncing(true);
+    setErrorMessage('');
+    try {
+      await api.connections.sync();
+      await load();
+      await reloadActivePages();
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Đồng bộ thất bại');
+    } finally {
+      setSyncing(false);
     }
-    await fetchPages();
-    setConnectStep(0);
-    setLoginSuccess(false);
-    setSelectedPages([]);
   };
 
   const handleDisconnectAccount = async (platformId: string) => {
-    if (!window.confirm('Bạn có chắc chắn muốn ngắt kết nối tài khoản này?')) return;
-    const pagesToDelete = dbPages.filter(p => p.platform === platformId);
-    for (const p of pagesToDelete) {
-      await fetch(`/api/zernio/pages/${p.id}`, { method: 'DELETE' });
+    const target = accounts.filter((a) => a.platform === platformId);
+    if (target.length === 0) return;
+    if (!window.confirm(`Ngắt kết nối ${target.length} tài khoản của kênh này?`)) return;
+    try {
+      for (const account of target) await api.connections.disconnect(account.id);
+      await load();
+      await reloadActivePages();
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không ngắt kết nối được');
     }
-    fetchPages();
   };
 
-  const handleDisconnectPage = async (pageId: string) => {
+  const handleDisconnectPage = async (accountId: string) => {
     if (!window.confirm('Ngắt kết nối trang này?')) return;
-    await fetch(`/api/zernio/pages/${pageId}`, { method: 'DELETE' });
-    fetchPages();
+    try {
+      await api.connections.disconnect(accountId);
+      await load();
+      await reloadActivePages();
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không ngắt kết nối được');
+    }
   };
 
-  const liveConnectedAccounts = [];
-  const groupedByPlatform = dbPages.reduce((acc, page) => {
-    if (!acc[page.platform]) acc[page.platform] = [];
-    acc[page.platform].push(page);
-    return acc;
-  }, {} as Record<string, any[]>);
+  const allPlatforms = [...catalog.social, ...catalog.ads, ...catalog.communication];
+  const connectedPlatformCount = allPlatforms.filter((c) => c.connected).length;
+  const connectablePlatformCount = allPlatforms.filter((c) => c.connectable).length;
+  const activePageCount = accounts.filter((a) => a.connected && a.platform !== 'metaads').length;
 
-  for (const [platform, pages] of Object.entries(groupedByPlatform) as unknown as [string, any[]][]) {
-    const channelInfo = [...socialChannels, ...adChannels, ...communicationChannels].find(c => c.id === platform) || { name: platform, icon: 'public' };
-    
-    liveConnectedAccounts.push({
-      id: platform + '_acc',
-      platformId: platform,
-      platformName: channelInfo.name,
-      platformIcon: channelInfo.icon,
-      accountName: "Tài khoản kết nối",
-      connectionDate: new Date(pages[0].created_at || Date.now()).toLocaleDateString('vi-VN'),
-      expiryDate: "Vô hạn",
-      status: "Đang hoạt động",
-      permissions: [
-        { name: "Truy cập trang", granted: true },
-        { name: "Quản lý nội dung", granted: true },
-        { name: "Đọc và trả lời tin nhắn", granted: true }
-      ],
-      pages: pages.map((p: any) => ({
-        id: p.id,
-        name: p.name,
-        avatar: 'https://ui-avatars.com/api/?name=' + encodeURIComponent(p.name) + '&background=random',
-        status: p.connected ? 'Đang hoạt động' : 'Mất kết nối',
-        messagesProcessed: 0,
-        commentsReplied: 0
-      }))
-    });
+  /**
+   * Trạng thái sức khoẻ chung, suy ra từ dữ liệu thật thay vì ô chọn thủ công.
+   * danger: có kênh mất kết nối. warning: có token sắp hết hạn trong 7 ngày.
+   */
+  const bannerState: 'normal' | 'warning' | 'danger' = (() => {
+    if (accounts.some((a) => a.needs_reconnection || !a.connected)) return 'danger';
+    const soon = Date.now() + 7 * 86400000;
+    if (accounts.some((a) => a.token_expires_at && new Date(a.token_expires_at).getTime() < soon)) {
+      return 'warning';
+    }
+    return 'normal';
+  })();
+
+  /** Gom tài khoản theo kênh để dựng khối "Tài khoản đã kết nối". */
+  const accountsByPlatform: Record<string, SocialAccount[]> = {};
+  for (const account of accounts) {
+    (accountsByPlatform[account.platform] ??= []).push(account);
   }
 
-  const isPlatformConnected = (pid: string) => dbPages.some(p => p.platform === pid && p.connected);
-  const liveSocialChannels = socialChannels.map(c => ({ ...c, connected: isPlatformConnected(c.id) }));
-  const liveAdChannels = adChannels.map(c => ({ ...c, connected: isPlatformConnected(c.id) }));
-  const liveCommChannels = communicationChannels.map(c => ({ ...c, connected: isPlatformConnected(c.id) }));
+  const liveConnectedAccounts = Object.entries(accountsByPlatform).map(([platform, list]) => {
+    const channel = allPlatforms.find((c) => c.zernioPlatform === platform)
+      ?? allPlatforms.find((c) => c.id === 'fb_ads' && platform === 'metaads');
+    return {
+      id: platform + '_acc',
+      platformId: platform,
+      platformName: channel?.name ?? platform,
+      platformIcon: channel?.icon ?? 'public',
+      accountName: list[0].display_name || list[0].username,
+      connectionDate: new Date(list[0].last_synced_at ?? Date.now()).toLocaleDateString('vi-VN'),
+      expiryDate: list[0].token_expires_at
+        ? new Date(list[0].token_expires_at).toLocaleDateString('vi-VN')
+        : 'Không giới hạn',
+      status: list.some((a) => a.needs_reconnection)
+        ? 'Mất kết nối'
+        : list.every((a) => a.connected) ? 'Đang hoạt động' : 'Mất kết nối',
+      permissions: [
+        { name: 'Đăng bài', granted: channel?.canPost ?? false },
+        { name: 'Đọc và trả lời tin nhắn', granted: channel?.canDm ?? false },
+        { name: 'Đọc và trả lời bình luận', granted: channel?.canComment ?? false },
+      ],
+      pages: list.map((a) => ({
+        id: a.id,
+        name: a.display_name || a.username,
+        avatar: a.profile_picture
+          ?? 'https://ui-avatars.com/api/?name=' + encodeURIComponent(a.display_name || a.username) + '&background=random',
+        status: a.needs_reconnection ? 'Mất kết nối' : a.connected ? 'Đang hoạt động' : 'Mất kết nối',
+        messagesProcessed: 0,
+        commentsReplied: 0,
+      })),
+    };
+  });
+
+  const liveSocialChannels = catalog.social;
+  const liveAdChannels = catalog.ads;
+  const liveCommChannels = catalog.communication;
+
+  /** Trang thuộc nền tảng đang kết nối, dùng cho bước chọn trang. */
+  const newlyConnectedPages = (selectedPlatform?.zernioPlatform
+    ? accounts.filter((a) => a.platform === selectedPlatform.zernioPlatform)
+    : []
+  ).map((a) => ({
+    id: a.id,
+    name: a.display_name || a.username,
+    avatar: a.profile_picture
+      ?? 'https://ui-avatars.com/api/?name=' + encodeURIComponent(a.display_name || a.username) + '&background=random',
+    followers: a.followers_count != null ? a.followers_count.toLocaleString('vi-VN') : '—',
+    connected: a.connected,
+  }));
 
   const topGridRef = useRef<HTMLDivElement>(null);
 
-  const handleOpenConnect = (platform?: {id: string, name: string, icon: string, connectionType?: string, selectionLabel?: string, requestedPermissions?: any[], publishOnly?: boolean, warnings?: string[], instructions?: string[]}) => {
+  const handleOpenConnect = (platform?: Platform) => {
+    setErrorMessage('');
     if (platform) {
-      let fullPlatform = { ...platform };
-      const allChannels = [...socialChannels, ...adChannels, ...communicationChannels];
-      const found = allChannels.find(c => c.id === platform.id);
-      
-      if (!platform.connectionType) {
-        if (found) {
-          fullPlatform.connectionType = found.connectionType || 'oauth_simple';
-          fullPlatform.selectionLabel = found.selectionLabel;
-        } else {
-          fullPlatform.connectionType = 'oauth_simple';
-        }
-      }
-      
-      if (found) {
-        fullPlatform.requestedPermissions = found.requestedPermissions;
-        fullPlatform.publishOnly = found.publishOnly;
-        fullPlatform.warnings = found.warnings;
-        fullPlatform.instructions = found.instructions;
-      }
-
-      setSelectedPlatform(fullPlatform);
+      setSelectedPlatform(platform);
       setConnectStep(2);
     } else {
       setSelectedPlatform(null);
@@ -142,19 +165,71 @@ export default function Connections() {
     setSelectedPages([]);
   };
 
-  const handleSimulateLogin = () => {
+  /**
+   * Mở luồng cấp quyền THẬT của nền tảng.
+   *
+   * Zernio trả về URL đăng nhập chính chủ (Facebook, Instagram...). Người dùng
+   * cấp quyền ở cửa sổ đó, Zernio nhận callback. Phía mình không nhận được tín
+   * hiệu trực tiếp nên sau khi cửa sổ đóng thì đồng bộ lại để biết kết quả.
+   */
+  const handleStartOAuth = async () => {
+    if (!selectedPlatform) return;
+    if (!selectedPlatform.connectable) {
+      setErrorMessage(selectedPlatform.capabilityNote ?? 'Kênh này chưa kết nối được.');
+      return;
+    }
+
     setIsLoggingIn(true);
-    setTimeout(() => {
-      setIsLoggingIn(false);
-      setLoginSuccess(true);
-      setTimeout(() => {
-        if (selectedPlatform?.connectionType === 'oauth_simple') {
-          setConnectStep(4);
-        } else {
-          setConnectStep(3);
+    setErrorMessage('');
+
+    try {
+      const { url } = await api.connections.connectUrl(selectedPlatform.zernioPlatform!);
+      const popup = window.open(url, 'zernio_oauth', 'width=680,height=760');
+      if (!popup) {
+        setIsLoggingIn(false);
+        setErrorMessage('Trình duyệt đã chặn cửa sổ bật lên. Hãy cho phép rồi thử lại.');
+        return;
+      }
+
+      const before = accounts.length;
+      const timer = window.setInterval(async () => {
+        if (!popup.closed) return;
+        window.clearInterval(timer);
+
+        try {
+          const result = await api.connections.sync();
+          setAccounts(result.data);
+          await load();
+          await reloadActivePages();
+
+          if (result.data.length > before) {
+            setLoginSuccess(true);
+            setTimeout(() => {
+              setConnectStep(selectedPlatform.connectionType === 'oauth_with_selection' ? 3 : 4);
+            }, 800);
+          } else {
+            setErrorMessage(
+              'Chưa thấy tài khoản mới nào. Có thể bạn đã đóng cửa sổ trước khi cấp quyền xong.'
+            );
+          }
+        } catch (error) {
+          setErrorMessage(error instanceof ApiError ? error.message : 'Không xác nhận được kết nối');
+        } finally {
+          setIsLoggingIn(false);
         }
       }, 1000);
-    }, 2000);
+    } catch (error) {
+      setIsLoggingIn(false);
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không lấy được liên kết cấp quyền');
+    }
+  };
+
+  const handleFinishConnection = async () => {
+    await load();
+    await reloadActivePages();
+    setConnectStep(0);
+    setLoginSuccess(false);
+    setSelectedPages([]);
   };
 
   const getStatusColor = (status: string) => {
@@ -186,7 +261,7 @@ export default function Connections() {
           <div className="flex items-center gap-3 mb-2">
             <h1 className="font-headline-sm text-3xl font-bold text-on-surface tracking-tight">Kết nối</h1>
             <span className="font-mono text-xs font-bold tracking-wider text-primary bg-primary/10 border border-primary/20 px-2.5 py-1 rounded-full uppercase">
-              {Object.keys(groupedByPlatform).length}/3 KÊNH ĐÃ KẾT NỐI
+              {connectedPlatformCount}/{connectablePlatformCount} KÊNH ĐÃ KẾT NỐI
             </span>
           </div>
           <p className="text-on-surface-variant text-sm">Kết nối các kênh bán hàng để AI bắt đầu làm việc cho bạn</p>
@@ -200,20 +275,7 @@ export default function Connections() {
         </button>
       </div>
 
-      <div className="flex items-center gap-2 mb-4" ref={topGridRef}>
-        <label className="text-sm font-medium text-on-surface-variant flex items-center gap-2">
-          [DEV] Chọn dải trạng thái: 
-          <select 
-            value={bannerState} 
-            onChange={(e) => setBannerState(e.target.value as any)}
-            className="bg-surface-container border border-outline-variant rounded px-2 py-1 text-on-surface focus:outline-none"
-          >
-            <option value="normal">Bình thường</option>
-            <option value="warning">Sắp hết hạn</option>
-            <option value="danger">Mất kết nối</option>
-          </select>
-        </label>
-      </div>
+      <div ref={topGridRef} />
 
       {/* Row 1: Status Banners */}
       <div className="mb-8">
@@ -225,7 +287,7 @@ export default function Connections() {
             </div>
             <div>
               <h3 className="text-base font-bold text-on-surface mb-0.5">Tất cả kết nối đang hoạt động tốt</h3>
-              <p className="text-sm text-on-surface-variant font-medium">AI đang chạy trên {dbPages.length} trang</p>
+              <p className="text-sm text-on-surface-variant font-medium">AI đang chạy trên {activePageCount} trang</p>
             </div>
           </div>
         )}
@@ -287,7 +349,7 @@ export default function Connections() {
                     if (channel.connected) {
                       topGridRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                     } else {
-                      handleOpenConnect({ id: channel.id, name: channel.name, icon: channel.icon });
+                      handleOpenConnect(channel);
                     }
                   }}
                   className={clsx(
@@ -357,7 +419,7 @@ export default function Connections() {
                     if (channel.connected) {
                       topGridRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                     } else {
-                      handleOpenConnect({ id: channel.id, name: channel.name, icon: channel.icon });
+                      handleOpenConnect(channel);
                     }
                   }}
                   className={clsx(
@@ -416,7 +478,7 @@ export default function Connections() {
                     if (channel.connected) {
                       topGridRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                     } else {
-                      handleOpenConnect({ id: channel.id, name: channel.name, icon: channel.icon });
+                      handleOpenConnect(channel);
                     }
                   }}
                   className={clsx(
@@ -568,7 +630,7 @@ export default function Connections() {
             {/* Footer Buttons */}
             <div className="mt-auto flex gap-3">
               <button 
-                onClick={() => handleOpenConnect({ id: account.platformId, name: account.platformName, icon: account.platformIcon })}
+                onClick={() => handleOpenConnect(allPlatforms.find((c) => c.zernioPlatform === account.platformId) ?? null!)}
                 className="flex-1 py-2.5 px-4 bg-surface-container border border-outline-variant text-on-surface font-bold rounded-xl hover:bg-surface-variant transition-colors">
                 Thêm trang từ tài khoản này
               </button>
@@ -891,7 +953,7 @@ export default function Connections() {
                   <div className="mt-8">
                     {!loginSuccess ? (
                       <button 
-                        onClick={handleSimulateLogin}
+                        onClick={handleStartOAuth}
                         disabled={isLoggingIn}
                         className="w-full py-3.5 px-4 bg-primary text-on-primary font-bold text-lg rounded-xl shadow-[0_4px_15px_rgba(0,229,255,0.4)] hover:scale-[1.02] transition-transform flex items-center justify-center gap-2 disabled:opacity-80 disabled:hover:scale-100"
                       >
@@ -921,11 +983,11 @@ export default function Connections() {
                 <>
                   <h2 className="text-2xl font-bold text-on-surface mb-2">Chọn {selectedPlatform.selectionLabel} muốn kết nối</h2>
                   <p className="text-on-surface-variant font-medium leading-relaxed mb-6">
-                    Tài khoản Hoàng Tuấn đang quản lý 5 {selectedPlatform.selectionLabel?.toLowerCase()}. Mỗi {selectedPlatform.selectionLabel?.toLowerCase()} kết nối tính là một lượt trong gói của bạn.
+                    Đã tìm thấy {newlyConnectedPages.length} {selectedPlatform.selectionLabel?.toLowerCase()} từ tài khoản vừa cấp quyền. Mỗi {selectedPlatform.selectionLabel?.toLowerCase()} kết nối tính là một lượt trong gói của bạn.
                   </p>
 
                   <div className="space-y-3 mb-6">
-                    {mockSubPagesToSelect.map(page => (
+                    {newlyConnectedPages.map(page => (
                       <label key={page.id} className={clsx("flex items-center gap-4 p-4 rounded-xl border transition-colors cursor-pointer", page.connected ? "bg-surface-variant/50 border-outline-variant/30 opacity-70" : selectedPages.includes(page.id) ? "bg-primary/5 border-primary shadow-[0_0_10px_rgba(0,229,255,0.1)]" : "bg-surface-container border-outline-variant hover:border-outline")}>
                         <div className="flex-1 flex items-center gap-4">
                           <img src={page.avatar} alt={page.name} className="w-12 h-12 rounded-full object-cover border border-outline-variant/50" />
@@ -1016,7 +1078,7 @@ export default function Connections() {
                       <div>
                         <div className="text-sm text-on-surface-variant mb-4">Các {selectedPlatform.selectionLabel?.toLowerCase()} sẽ được kết nối:</div>
                         <div className="space-y-3">
-                          {mockSubPagesToSelect.filter(p => selectedPages.includes(p.id)).map(page => (
+                          {newlyConnectedPages.filter(p => selectedPages.includes(p.id)).map(page => (
                             <div key={page.id} className="flex items-center gap-3">
                               <span className="material-symbols-outlined text-green-400 text-[18px]">check_circle</span>
                               <img src={page.avatar} alt={page.name} className="w-6 h-6 rounded-full object-cover" />
