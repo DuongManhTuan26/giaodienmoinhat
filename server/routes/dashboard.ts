@@ -83,6 +83,126 @@ dashboardRouter.get(
   })
 );
 
+/**
+ * Bốn biểu đồ nhỏ dạng đường, mỗi cái là số liệu 7 ngày gần nhất.
+ * Cấp đúng hình dạng mà giao diện đang vẽ: nhãn, giá trị hiện tại, và
+ * mảng số để vẽ đường.
+ */
+dashboardRouter.get(
+  "/sparklines",
+  route(async (req, res) => {
+    const userId = req.user!.id;
+
+    const series = await query<{
+      day: string;
+      messages: number;
+      ai_messages: number;
+      orders: number;
+      customers: number;
+    }>(
+      `SELECT to_char(d.day, 'YYYY-MM-DD') AS day,
+              (SELECT COUNT(*) FROM messages m
+                WHERE m.user_id = $1 AND date_trunc('day', m.sent_at) = d.day)::int      AS messages,
+              (SELECT COUNT(*) FROM messages m
+                WHERE m.user_id = $1 AND m.sender_type = 'ai'
+                  AND date_trunc('day', m.sent_at) = d.day)::int                          AS ai_messages,
+              (SELECT COUNT(*) FROM orders o
+                WHERE o.user_id = $1 AND date_trunc('day', o.created_at) = d.day)::int    AS orders,
+              (SELECT COUNT(*) FROM customers c
+                WHERE c.user_id = $1 AND date_trunc('day', c.first_seen_at) = d.day)::int AS customers
+         FROM generate_series(
+                date_trunc('day', now()) - interval '6 days',
+                date_trunc('day', now()),
+                interval '1 day'
+              ) AS d(day)
+        ORDER BY d.day`,
+      [userId]
+    );
+
+    const rows = series.rows;
+    const column = (key: keyof (typeof rows)[number]) =>
+      rows.map((row) => Number(row[key]) || 0);
+    const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
+
+    const messages = column("messages");
+    const aiMessages = column("ai_messages");
+    const orders = column("orders");
+    const customers = column("customers");
+
+    // Tỷ lệ AI tự xử lý: phần tin nhắn AI trả lời trên tổng tin nhắn.
+    const totalMessages = sum(messages);
+    const autoRate =
+      totalMessages > 0 ? Math.round((sum(aiMessages) / totalMessages) * 100) : 0;
+
+    res.json({
+      success: true,
+      data: [
+        { id: 1, label: "TIN NHẮN 7 NGÀY", value: String(totalMessages), data: messages },
+        { id: 2, label: "AI PHẢN HỒI", value: String(sum(aiMessages)), data: aiMessages },
+        { id: 3, label: "ĐƠN HÀNG", value: String(sum(orders)), data: orders },
+        { id: 4, label: "TỶ LỆ AI XỬ LÝ", value: `${autoRate}%`, data: customers },
+      ],
+    });
+  })
+);
+
+/**
+ * Dòng hoạt động gần đây, gộp từ tin nhắn AI, đơn hàng và lần nhường quyền.
+ * Màu sắc dùng đúng bảng màu giao diện đang dùng cho từng loại sự kiện.
+ */
+dashboardRouter.get(
+  "/activity",
+  route(async (req, res) => {
+    const rows = await query<{
+      kind: string;
+      content: string;
+      at: Date;
+    }>(
+      `(SELECT 'order' AS kind,
+               'Chốt đơn ' || code || COALESCE(' cho ' || customer_name, '') AS content,
+               created_at AS at
+          FROM orders WHERE user_id = $1
+         ORDER BY created_at DESC LIMIT 8)
+       UNION ALL
+       (SELECT 'handoff' AS kind,
+               'AI nhường quyền: ' || COALESCE(handoff_reason, 'cần người hỗ trợ') AS content,
+               handoff_at AS at
+          FROM conversations
+         WHERE user_id = $1 AND handoff_at IS NOT NULL
+         ORDER BY handoff_at DESC LIMIT 8)
+       UNION ALL
+       (SELECT 'ai_reply' AS kind,
+               'AI trả lời: ' || left(content, 60) AS content,
+               sent_at AS at
+          FROM messages
+         WHERE user_id = $1 AND sender_type = 'ai'
+         ORDER BY sent_at DESC LIMIT 8)
+       ORDER BY at DESC
+       LIMIT 12`,
+      [req.user!.id]
+    );
+
+    const colors: Record<string, string> = {
+      order: "bg-secondary",
+      handoff: "bg-error",
+      ai_reply: "bg-primary",
+    };
+
+    res.json({
+      success: true,
+      data: rows.rows.map((row, index) => ({
+        id: index + 1,
+        time: new Date(row.at).toLocaleTimeString("vi-VN", {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+        content: row.content,
+        color: colors[row.kind] ?? "bg-primary",
+      })),
+    });
+  })
+);
+
 /** Doanh thu và số đơn theo từng ngày, dùng vẽ biểu đồ. */
 dashboardRouter.get(
   "/chart",

@@ -1,80 +1,101 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { AreaChart, Area, ResponsiveContainer } from 'recharts';
 import { clsx } from 'clsx';
 import { useNavigate } from 'react-router-dom';
-import { 
-  miniCharts, 
-  aiActivity 
-} from '../data/mockApi';
+import { api, formatCurrency, timeAgo, ORDER_STATUS_LABELS } from '../lib/api';
+
+type Range = '1d' | '7d' | '30d';
+
+const RANGE_LABELS: Record<Range, string> = {
+  '1d': 'Hôm nay',
+  '7d': '7 ngày qua',
+  '30d': '30 ngày qua',
+};
 
 export default function Dashboard() {
   const navigate = useNavigate();
   const [dashboardData, setDashboardData] = useState<any>(null);
+  const [miniCharts, setMiniCharts] = useState<Array<{ id: number; label: string; value: string; data: number[] }>>([]);
+  const [aiActivity, setAiActivity] = useState<Array<{ id: number; time: string; content: string; color: string }>>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isApplying, setIsApplying] = useState(false);
+  const [range, setRange] = useState<Range>('1d');
+  const [rangeOpen, setRangeOpen] = useState(false);
 
-  useEffect(() => {
-    const fetchDashboardData = async () => {
-      try {
-        const response = await fetch('/api/dashboard/stats');
-        const data = await response.json();
-        if (data.success) {
-          setDashboardData(data);
-        }
-      } catch (error) {
-        console.error("Failed to fetch dashboard data", error);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    fetchDashboardData();
+  const load = useCallback(async (selected: Range) => {
+    setIsLoading(true);
+    try {
+      const [stats, sparklines, activity] = await Promise.all([
+        api.dashboard.stats(selected),
+        api.dashboard.sparklines(),
+        api.dashboard.activity(),
+      ]);
+      setDashboardData(stats);
+      setMiniCharts(sparklines.data);
+      setAiActivity(activity.data);
+    } catch (error) {
+      console.error('Không tải được dữ liệu bảng điều khiển', error);
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
 
-  const handleApplyRecommendation = () => {
+  useEffect(() => {
+    load(range);
+  }, [load, range]);
+
+  const handleApplyRecommendation = async () => {
     setIsApplying(true);
-    // Simulate API call to save script
-    setTimeout(() => {
-      alert("Đã áp dụng đề xuất thành công! Kịch bản AI đã được cập nhật.");
+    try {
+      // Đưa thẳng sang màn hình huấn luyện AI bán hàng để chỉnh kịch bản,
+      // vì đề xuất chỉ có giá trị khi được người duyệt và sửa vào kịch bản thật.
+      navigate('/auto-scripts');
+    } finally {
       setIsApplying(false);
-    }, 800);
+    }
   };
 
-  const stats = dashboardData?.stats || { totalOrders: 0, totalCustomers: 0, activePages: 0, aiMessagesCount: 0 };
+  const stats = dashboardData?.stats || {
+    orders_count: 0, revenue: 0, new_customers: 0, open_conversations: 0,
+    waiting_human: 0, connected_accounts: 0, ai_messages: 0, ai_closed_orders: 0,
+  };
   const realRecentOrders = dashboardData?.recentOrders || [];
   const urgentTasks = dashboardData?.urgentTasks || [];
-  const aiInsight = dashboardData?.aiInsight || {
-    rawData: 'Hệ thống đang thu thập dữ liệu...',
-    recommendation: 'Vui lòng chờ AI phân tích.'
-  };
+  const aiInsight = dashboardData?.aiReport
+    ? { rawData: dashboardData.aiReport.findings, recommendation: dashboardData.aiReport.recommendation }
+    : {
+        rawData: 'Hệ thống đang thu thập dữ liệu hội thoại và đơn hàng.',
+        recommendation: 'Báo cáo phân tích sẽ xuất hiện sau khi có đủ dữ liệu trong ngày.',
+      };
 
   const dynamicMetricCards = [
     {
       id: 1,
       label: 'Tổng Đơn Hàng',
-      value: stats.totalOrders.toString(),
-      subtext: 'Đơn hàng trên hệ thống',
-      trend: 'Tăng',
+      value: String(stats.orders_count),
+      subtext: formatCurrency(stats.revenue),
+      trend: stats.orders_count > 0 ? 'Tăng' : undefined,
     },
     {
       id: 2,
       label: 'Khách Hàng',
-      value: stats.totalCustomers.toString(),
+      value: String(stats.new_customers),
       subtext: 'Khách hàng đã tương tác',
-      trend: 'Tăng',
+      trend: stats.new_customers > 0 ? 'Tăng' : undefined,
     },
     {
       id: 3,
       label: 'Kênh Kết Nối',
-      value: stats.activePages.toString(),
+      value: String(stats.connected_accounts),
       subtext: 'Fanpage đang hoạt động',
       isStatus: true,
-      hasBlinkingDot: true,
+      hasBlinkingDot: stats.connected_accounts === 0,
     },
     {
       id: 4,
       label: 'AI Đã Phản Hồi',
-      value: stats.aiMessagesCount.toString(),
-      subtext: 'Tin nhắn được AI xử lý',
+      value: String(stats.ai_messages),
+      subtext: `${stats.ai_closed_orders} đơn do AI chốt`,
       action: 'Cấu hình kịch bản',
     }
   ];
@@ -89,16 +110,30 @@ export default function Dashboard() {
             <h2 className="text-on-surface-variant font-body-lg">Tổng quan hoạt động tự động hôm nay</h2>
           </div>
           <div className="flex items-center gap-3 relative">
-            <button 
-              onClick={() => {
-                alert("Tính năng chọn khoảng thời gian (7 ngày, 30 ngày) sẽ được mở khi Database có đủ dữ liệu lịch sử.");
-              }}
+            <button
+              onClick={() => setRangeOpen((open) => !open)}
               className="flex items-center gap-2 px-4 py-2 bg-surface-container rounded-lg border border-outline-variant hover:border-primary transition-colors text-sm font-medium"
             >
               <span className="material-symbols-outlined text-[18px]">calendar_today</span>
-              Hôm nay
+              {RANGE_LABELS[range]}
               <span className="material-symbols-outlined text-[18px]">arrow_drop_down</span>
             </button>
+            {rangeOpen && (
+              <div className="absolute right-0 top-full mt-2 z-20 w-44 bg-surface-container-high border border-outline-variant rounded-lg shadow-lg overflow-hidden">
+                {(Object.keys(RANGE_LABELS) as Range[]).map((option) => (
+                  <button
+                    key={option}
+                    onClick={() => { setRange(option); setRangeOpen(false); }}
+                    className={clsx(
+                      'w-full text-left px-4 py-2.5 text-sm font-medium transition-colors hover:bg-surface-container-highest',
+                      option === range ? 'text-primary bg-primary/10' : 'text-on-surface'
+                    )}
+                  >
+                    {RANGE_LABELS[option]}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
@@ -215,16 +250,31 @@ export default function Dashboard() {
                           <div className="font-medium text-on-surface whitespace-nowrap">{order.product}</div>
                           <div className="text-xs text-on-surface-variant mt-0.5">SL: {order.quantity}</div>
                         </td>
-                        <td className="py-3 px-4 font-medium whitespace-nowrap">Chờ cập nhật</td>
+                        <td className="py-3 px-4 font-medium whitespace-nowrap">{formatCurrency(order.total)}</td>
                         <td className="py-3 px-4">
-                          <span className={`inline-block px-2 py-1 rounded text-xs font-bold border bg-primary/20 text-primary border-primary/30 whitespace-nowrap`}>
-                            AI chốt
+                          <span className={clsx(
+                            'inline-block px-2 py-1 rounded text-xs font-bold border whitespace-nowrap',
+                            order.closed_by === 'ai'
+                              ? 'bg-primary/20 text-primary border-primary/30'
+                              : 'bg-secondary/20 text-secondary border-secondary/30'
+                          )}>
+                            {order.closed_by === 'ai' ? 'AI chốt' : 'Nhân viên chốt'}
                           </span>
                         </td>
                         <td className="py-3 px-4">
-                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${order.status === 'pending' ? 'bg-error/20 text-error' : 'bg-secondary/20 text-secondary'} whitespace-nowrap`}>
-                            <span className={`w-1.5 h-1.5 rounded-full ${order.status === 'pending' ? 'bg-error' : 'bg-secondary'}`}></span>
-                            {order.status === 'pending' ? 'Chưa giao' : 'Hoàn thành'}
+                          <span className={clsx(
+                            'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold whitespace-nowrap',
+                            order.status === 'completed' ? 'bg-secondary/20 text-secondary'
+                              : order.status === 'cancelled' ? 'bg-on-surface-variant/20 text-on-surface-variant'
+                              : 'bg-error/20 text-error'
+                          )}>
+                            <span className={clsx(
+                              'w-1.5 h-1.5 rounded-full',
+                              order.status === 'completed' ? 'bg-secondary'
+                                : order.status === 'cancelled' ? 'bg-on-surface-variant'
+                                : 'bg-error'
+                            )}></span>
+                            {ORDER_STATUS_LABELS[order.status as keyof typeof ORDER_STATUS_LABELS] ?? order.status}
                           </span>
                         </td>
                       </tr>
@@ -296,11 +346,14 @@ export default function Dashboard() {
               
               <div className="flex flex-col gap-3">
                 {urgentTasks.length > 0 ? urgentTasks.map((task: any, index: number) => {
-                  const waitMinutes = Math.floor((new Date().getTime() - new Date(task.created_at).getTime()) / 60000);
-                  const waitTimeStr = waitMinutes < 60 ? `chờ ${waitMinutes} phút` : `chờ ${Math.floor(waitMinutes/60)} giờ`;
-                  
+                  const waitTimeStr = timeAgo(task.last_message_at);
+
                   return (
-                  <div key={index} className="flex items-center gap-3 p-2 rounded hover:bg-surface-container-highest transition-colors cursor-pointer group">
+                  <div
+                    key={task.id ?? index}
+                    onClick={() => navigate('/inbox')}
+                    className="flex items-center gap-3 p-2 rounded hover:bg-surface-container-highest transition-colors cursor-pointer group"
+                  >
                     <div className="w-8 h-8 rounded-full bg-error/20 text-error font-bold flex items-center justify-center shrink-0 border border-error/30">
                       {task.customer_name ? task.customer_name.charAt(0).toUpperCase() : '?'}
                     </div>
@@ -309,7 +362,7 @@ export default function Dashboard() {
                         <p className="font-medium text-sm text-on-surface truncate">{task.customer_name || 'Khách vãng lai'}</p>
                         <p className="text-xs text-error font-medium">{waitTimeStr}</p>
                       </div>
-                      <p className="text-xs text-on-surface-variant truncate">{task.issue || 'Cần hỗ trợ'}</p>
+                      <p className="text-xs text-on-surface-variant truncate">{task.handoff_reason || 'Cần hỗ trợ'}</p>
                     </div>
                     <span className="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors text-[16px]">arrow_forward_ios</span>
                   </div>

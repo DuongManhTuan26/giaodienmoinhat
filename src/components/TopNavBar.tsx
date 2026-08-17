@@ -1,7 +1,11 @@
 import { useLocation } from 'react-router-dom';
 import type { User } from '../lib/api';
 
-export default function TopNavBar({ user }: { user?: User | null }) {
+export default function TopNavBar({ user, avatarUrl }: {
+  user?: User | null;
+  /** Ảnh đại diện của Fanpage đang hoạt động, lấy từ kênh đã kết nối. */
+  avatarUrl?: string | null;
+}) {
   const location = useLocation();
   
   const getPageTitle = () => {
@@ -37,14 +41,17 @@ export default function TopNavBar({ user }: { user?: User | null }) {
         <button className="text-primary hover:bg-surface-container-highest/80 rounded-full p-2 transition-all duration-200 flex items-center justify-center">
           <span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 0" }}>bolt</span>
         </button>
-        <div
-          className="h-8 w-8 rounded-full ml-sm border-2 border-primary overflow-hidden relative group cursor-pointer bg-surface-container-high flex items-center justify-center"
-          title={user?.email ?? ''}
-        >
-          {/* Chữ cái đầu của tên shop, thay cho ảnh đại diện dựng sẵn */}
-          <span className="font-label-sm font-bold text-primary text-sm">
-            {(user?.name || user?.email || '?').trim().charAt(0).toUpperCase()}
-          </span>
+        <div className="h-8 w-8 rounded-full ml-sm border-2 border-primary overflow-hidden relative group cursor-pointer" title={user?.email ?? ''}>
+          {avatarUrl ? (
+            <img alt="Active Fanpage Avatar" className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300" src={avatarUrl}/>
+          ) : (
+            /* Chỉ dùng khi Fanpage chưa có ảnh đại diện — giữ nguyên khung tròn và viền */
+            <div className="w-full h-full bg-surface-container-high flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+              <span className="font-label-sm font-bold text-primary text-sm">
+                {(user?.name || user?.email || '?').trim().charAt(0).toUpperCase()}
+              </span>
+            </div>
+          )}
           <div className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-[#72a664] rounded-full border-2 border-background"></div>
         </div>
       </div>

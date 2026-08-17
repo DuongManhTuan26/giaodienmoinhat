@@ -22,6 +22,7 @@ type AppState = 'loading' | 'auth' | 'onboarding' | 'setup_complete' | 'main';
 export default function App() {
   const [appState, setAppState] = useState<AppState>('loading');
   const [user, setUser] = useState<User | null>(null);
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
 
   // Kiểm tra phiên hiện có khi mở trang. Người dùng đã đăng nhập rồi thì
   // không bắt đăng nhập lại mỗi lần tải lại trang.
@@ -47,6 +48,27 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  // Ảnh đại diện trên thanh trên lấy từ kênh đã kết nối, không dùng ảnh dựng sẵn.
+  useEffect(() => {
+    if (appState !== 'main') return;
+    let cancelled = false;
+
+    api.connections
+      .accounts()
+      .then(({ data }) => {
+        if (cancelled) return;
+        const active = data.find((account) => account.connected && account.profile_picture);
+        setAvatarUrl(active?.profile_picture ?? null);
+      })
+      .catch(() => {
+        /* Không lấy được ảnh thì hiển thị chữ cái đầu, không cần báo lỗi. */
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [appState]);
 
   const handleLogout = useCallback(async () => {
     try {
@@ -99,7 +121,7 @@ export default function App() {
     <div className="flex h-screen w-full bg-background">
       <Sidebar onLogout={handleLogout} />
       <div className="flex-1 ml-72 flex flex-col h-screen relative">
-        <TopNavBar user={user} />
+        <TopNavBar user={user} avatarUrl={avatarUrl} />
         <main className="flex-1 overflow-y-auto custom-scrollbar pt-16">
           <Routes>
             <Route path="/" element={<Dashboard />} />

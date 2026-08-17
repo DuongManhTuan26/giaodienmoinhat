@@ -230,6 +230,14 @@ export const api = {
       get<{ data: Array<{ label: string; orders: number; revenue: number }> }>(
         `/dashboard/chart?range=${range}`
       ),
+    sparklines: () =>
+      get<{ data: Array<{ id: number; label: string; value: string; data: number[] }> }>(
+        "/dashboard/sparklines"
+      ),
+    activity: () =>
+      get<{ data: Array<{ id: number; time: string; content: string; color: string }> }>(
+        "/dashboard/activity"
+      ),
   },
 
   orders: {
