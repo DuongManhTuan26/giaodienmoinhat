@@ -1,27 +1,100 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { AreaChart, Area, ResponsiveContainer } from 'recharts';
 import { clsx } from 'clsx';
+import { useNavigate } from 'react-router-dom';
 import { 
-  metricCards, 
   miniCharts, 
-  recentOrders, 
-  aiInsights, 
-  actionRequired, 
   aiActivity 
 } from '../data/mockApi';
 
 export default function Dashboard() {
+  const navigate = useNavigate();
+  const [dashboardData, setDashboardData] = useState<any>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isApplying, setIsApplying] = useState(false);
+
+  useEffect(() => {
+    const fetchDashboardData = async () => {
+      try {
+        const response = await fetch('/api/dashboard/stats');
+        const data = await response.json();
+        if (data.success) {
+          setDashboardData(data);
+        }
+      } catch (error) {
+        console.error("Failed to fetch dashboard data", error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    fetchDashboardData();
+  }, []);
+
+  const handleApplyRecommendation = () => {
+    setIsApplying(true);
+    // Simulate API call to save script
+    setTimeout(() => {
+      alert("Đã áp dụng đề xuất thành công! Kịch bản AI đã được cập nhật.");
+      setIsApplying(false);
+    }, 800);
+  };
+
+  const stats = dashboardData?.stats || { totalOrders: 0, totalCustomers: 0, activePages: 0, aiMessagesCount: 0 };
+  const realRecentOrders = dashboardData?.recentOrders || [];
+  const urgentTasks = dashboardData?.urgentTasks || [];
+  const aiInsight = dashboardData?.aiInsight || {
+    rawData: 'Hệ thống đang thu thập dữ liệu...',
+    recommendation: 'Vui lòng chờ AI phân tích.'
+  };
+
+  const dynamicMetricCards = [
+    {
+      id: 1,
+      label: 'Tổng Đơn Hàng',
+      value: stats.totalOrders.toString(),
+      subtext: 'Đơn hàng trên hệ thống',
+      trend: 'Tăng',
+    },
+    {
+      id: 2,
+      label: 'Khách Hàng',
+      value: stats.totalCustomers.toString(),
+      subtext: 'Khách hàng đã tương tác',
+      trend: 'Tăng',
+    },
+    {
+      id: 3,
+      label: 'Kênh Kết Nối',
+      value: stats.activePages.toString(),
+      subtext: 'Fanpage đang hoạt động',
+      isStatus: true,
+      hasBlinkingDot: true,
+    },
+    {
+      id: 4,
+      label: 'AI Đã Phản Hồi',
+      value: stats.aiMessagesCount.toString(),
+      subtext: 'Tin nhắn được AI xử lý',
+      action: 'Cấu hình kịch bản',
+    }
+  ];
+
   return (
     <main className="flex-1 w-full relative     bg-background text-on-surface">
       <div className="pt-8 pb-8 px-margin max-w-[1600px] mx-auto w-full">
         
         {/* Header Section */}
-        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-lg">
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-lg relative">
           <div>
             <h2 className="text-on-surface-variant font-body-lg">Tổng quan hoạt động tự động hôm nay</h2>
           </div>
-          <div className="flex items-center gap-3">
-            <button className="flex items-center gap-2 px-4 py-2 bg-surface-container rounded-lg border border-outline-variant hover:border-primary transition-colors text-sm font-medium">
+          <div className="flex items-center gap-3 relative">
+            <button 
+              onClick={() => {
+                alert("Tính năng chọn khoảng thời gian (7 ngày, 30 ngày) sẽ được mở khi Database có đủ dữ liệu lịch sử.");
+              }}
+              className="flex items-center gap-2 px-4 py-2 bg-surface-container rounded-lg border border-outline-variant hover:border-primary transition-colors text-sm font-medium"
+            >
               <span className="material-symbols-outlined text-[18px]">calendar_today</span>
               Hôm nay
               <span className="material-symbols-outlined text-[18px]">arrow_drop_down</span>
@@ -35,7 +108,7 @@ export default function Dashboard() {
             
             {/* ROW 1: Metric Cards */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-gutter">
-              {metricCards.map((card) => (
+              {dynamicMetricCards.map((card) => (
                 <div key={card.id} className="bg-surface-container-high rounded-xl p-5 border border-outline-variant shadow-lg relative overflow-hidden group hover:border-primary/50 transition-colors flex flex-col justify-between min-h-[140px]">
                   <div className="absolute top-0 right-0 w-32 h-32 bg-primary/5 rounded-bl-full -mr-10 -mt-10 transition-transform group-hover:scale-110 pointer-events-none z-0"></div>
                   
@@ -67,7 +140,12 @@ export default function Dashboard() {
                   
                   {card.action && (
                     <div className="mt-auto pt-3 relative z-10 shrink-0">
-                      <button className="w-full py-1.5 bg-primary/10 text-primary border border-primary/30 rounded text-xs font-bold hover:bg-primary/20 transition-colors truncate">
+                      <button 
+                        onClick={() => {
+                          if (card.action === 'Cấu hình kịch bản') navigate('/auto-scripts');
+                        }}
+                        className="w-full py-1.5 bg-primary/10 text-primary border border-primary/30 rounded text-xs font-bold hover:bg-primary/20 transition-colors truncate"
+                      >
                         {card.action}
                       </button>
                     </div>
@@ -107,9 +185,9 @@ export default function Dashboard() {
             <div className="bg-surface-container rounded-xl border border-outline-variant shadow-lg flex flex-col overflow-hidden">
               <div className="p-4 border-b border-outline-variant flex justify-between items-center bg-surface-container-high/50">
                 <h3 className="font-headline-sm text-lg font-bold text-on-surface">Đơn hàng mới nhất</h3>
-                <a href="/orders" className="text-primary text-sm font-bold hover:underline flex items-center gap-1">
+                <button onClick={() => navigate('/orders')} className="text-primary text-sm font-bold hover:underline flex items-center gap-1">
                   XEM TẤT CẢ <span className="material-symbols-outlined text-[16px]">arrow_forward</span>
-                </a>
+                </button>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
@@ -123,34 +201,40 @@ export default function Dashboard() {
                     </tr>
                   </thead>
                   <tbody className="font-body-md text-sm text-on-surface">
-                    {recentOrders.map((order) => (
+                    {realRecentOrders.length > 0 ? realRecentOrders.map((order: any) => (
                       <tr key={order.id} className="border-b border-outline-variant hover:bg-surface-container-highest transition-colors">
                         <td className="py-3 px-4">
                           <div className="flex items-center gap-3">
                             <div className="w-8 h-8 rounded-full bg-secondary-container text-on-secondary-container font-bold flex items-center justify-center shrink-0">
-                              {order.customerInitial}
+                              {order.customer_name ? order.customer_name.charAt(0).toUpperCase() : '?'}
                             </div>
-                            <span className="font-medium text-on-surface whitespace-nowrap">{order.customerName}</span>
+                            <span className="font-medium text-on-surface whitespace-nowrap">{order.customer_name || 'Khách vãng lai'}</span>
                           </div>
                         </td>
                         <td className="py-3 px-4">
-                          <div className="font-medium text-on-surface whitespace-nowrap">{order.productName}</div>
-                          <div className="text-xs text-on-surface-variant mt-0.5">{order.productDesc}</div>
+                          <div className="font-medium text-on-surface whitespace-nowrap">{order.product}</div>
+                          <div className="text-xs text-on-surface-variant mt-0.5">SL: {order.quantity}</div>
                         </td>
-                        <td className="py-3 px-4 font-medium whitespace-nowrap">{order.price}</td>
+                        <td className="py-3 px-4 font-medium whitespace-nowrap">Chờ cập nhật</td>
                         <td className="py-3 px-4">
-                          <span className={`inline-block px-2 py-1 rounded text-xs font-bold border ${order.source === 'AI chốt' ? 'bg-primary/20 text-primary border-primary/30' : 'bg-tertiary/20 text-tertiary border-tertiary/30'} whitespace-nowrap`}>
-                            {order.source}
+                          <span className={`inline-block px-2 py-1 rounded text-xs font-bold border bg-primary/20 text-primary border-primary/30 whitespace-nowrap`}>
+                            AI chốt
                           </span>
                         </td>
                         <td className="py-3 px-4">
-                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${order.statusColor} whitespace-nowrap`}>
-                            <span className={`w-1.5 h-1.5 rounded-full ${order.dotColor}`}></span>
-                            {order.status}
+                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${order.status === 'pending' ? 'bg-error/20 text-error' : 'bg-secondary/20 text-secondary'} whitespace-nowrap`}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${order.status === 'pending' ? 'bg-error' : 'bg-secondary'}`}></span>
+                            {order.status === 'pending' ? 'Chưa giao' : 'Hoàn thành'}
                           </span>
                         </td>
                       </tr>
-                    ))}
+                    )) : (
+                      <tr>
+                        <td colSpan={5} className="py-6 text-center text-on-surface-variant text-sm">
+                          {isLoading ? 'Đang tải dữ liệu...' : 'Chưa có đơn hàng nào'}
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -175,17 +259,24 @@ export default function Dashboard() {
               
               <div className="mb-4 relative z-10">
                 <p className="text-xs font-bold text-on-surface-variant mb-1 uppercase">Dữ liệu thô:</p>
-                <p className="text-sm text-on-surface/90 leading-relaxed bg-surface-container-highest/50 p-2 rounded border border-outline-variant">{aiInsights.raw}</p>
+                <p className="text-sm text-on-surface/90 leading-relaxed bg-surface-container-highest/50 p-2 rounded border border-outline-variant">{aiInsight.rawData}</p>
               </div>
               
               <div className="mb-5 relative z-10">
                 <p className="text-xs font-bold text-on-surface-variant mb-1 uppercase">Khuyến nghị:</p>
-                <p className="text-sm text-primary font-medium leading-relaxed bg-primary/5 p-2 rounded border border-primary/20">{aiInsights.recommendation}</p>
+                <p className="text-sm text-primary font-medium leading-relaxed bg-primary/5 p-2 rounded border border-primary/20">{aiInsight.recommendation}</p>
               </div>
               
               <div className="flex items-center gap-2 relative z-10">
-                <button className="flex-1 py-2 bg-primary text-on-primary font-bold text-sm rounded shadow-[0_0_10px_rgba(0,229,255,0.3)] hover:brightness-110 transition-all">
-                  Áp dụng đề xuất
+                <button 
+                  onClick={handleApplyRecommendation}
+                  disabled={isApplying}
+                  className="flex-1 py-2 bg-primary text-on-primary font-bold text-sm rounded shadow-[0_0_10px_rgba(0,229,255,0.3)] hover:brightness-110 transition-all disabled:opacity-70 flex justify-center items-center gap-2"
+                >
+                  {isApplying ? (
+                    <span className="w-4 h-4 border-2 border-on-primary border-t-transparent rounded-full animate-spin"></span>
+                  ) : null}
+                  {isApplying ? 'Đang áp dụng...' : 'Áp dụng đề xuất'}
                 </button>
                 <button className="px-4 py-2 bg-transparent border border-outline-variant text-on-surface hover:text-primary hover:border-primary text-sm font-medium rounded transition-colors">
                   Bỏ qua
@@ -200,25 +291,31 @@ export default function Dashboard() {
                   <span className="material-symbols-outlined text-error">warning</span>
                   Cần xử lý ngay
                 </h3>
-                <span className="w-6 h-6 rounded-full bg-error text-on-error flex items-center justify-center text-xs font-bold">{actionRequired.length}</span>
+                <span className="w-6 h-6 rounded-full bg-error text-on-error flex items-center justify-center text-xs font-bold">{urgentTasks.length}</span>
               </div>
               
               <div className="flex flex-col gap-3">
-                {actionRequired.map((task) => (
-                  <div key={task.id} className="flex items-center gap-3 p-2 rounded hover:bg-surface-container-highest transition-colors cursor-pointer group">
+                {urgentTasks.length > 0 ? urgentTasks.map((task: any, index: number) => {
+                  const waitMinutes = Math.floor((new Date().getTime() - new Date(task.created_at).getTime()) / 60000);
+                  const waitTimeStr = waitMinutes < 60 ? `chờ ${waitMinutes} phút` : `chờ ${Math.floor(waitMinutes/60)} giờ`;
+                  
+                  return (
+                  <div key={index} className="flex items-center gap-3 p-2 rounded hover:bg-surface-container-highest transition-colors cursor-pointer group">
                     <div className="w-8 h-8 rounded-full bg-error/20 text-error font-bold flex items-center justify-center shrink-0 border border-error/30">
-                      {task.initial}
+                      {task.customer_name ? task.customer_name.charAt(0).toUpperCase() : '?'}
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex justify-between items-baseline">
-                        <p className="font-medium text-sm text-on-surface truncate">{task.name}</p>
-                        <p className="text-xs text-error font-medium">{task.waitTime}</p>
+                        <p className="font-medium text-sm text-on-surface truncate">{task.customer_name || 'Khách vãng lai'}</p>
+                        <p className="text-xs text-error font-medium">{waitTimeStr}</p>
                       </div>
-                      <p className="text-xs text-on-surface-variant truncate">{task.reason}</p>
+                      <p className="text-xs text-on-surface-variant truncate">{task.issue || 'Cần hỗ trợ'}</p>
                     </div>
                     <span className="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors text-[16px]">arrow_forward_ios</span>
                   </div>
-                ))}
+                )}) : (
+                  <p className="text-sm text-on-surface-variant text-center py-4">Chưa có yêu cầu nào cần xử lý ngay.</p>
+                )}
               </div>
             </div>
 

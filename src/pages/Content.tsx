@@ -1,12 +1,10 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { clsx } from 'clsx';
 import { mockPosts } from '../data/mockApi';
 import AITrainingModal from '../components/AITrainingModal';
 
-const FILTERS = ['Chờ duyệt (3)', 'Đã lên lịch (5)', 'Đã đăng', 'Bản nháp'];
-
 export default function Content() {
-  const [activeFilter, setActiveFilter] = useState('Chờ duyệt (3)');
+  const [activeFilter, setActiveFilter] = useState('Chờ duyệt (0)');
   const [postMode, setPostMode] = useState<'manual' | 'auto'>('manual');
   const [showAutoConfirm, setShowAutoConfirm] = useState(false);
   const [isComposerOpen, setIsComposerOpen] = useState(false);
@@ -20,6 +18,83 @@ export default function Content() {
   const [aiOptions, setAiOptions] = useState<string[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
 
+  const [dbPosts, setDbPosts] = useState<any[]>([]);
+
+  const fetchPosts = async () => {
+    try {
+      const response = await fetch('/api/posts');
+      const data = await response.json();
+      if (data.success) {
+        setDbPosts(data.data);
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  useEffect(() => {
+    fetchPosts();
+  }, []);
+
+  const handleApprove = async (id: string) => {
+    await fetch(`/api/posts/${id}/status`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'Đã đăng' })
+    });
+    fetchPosts();
+  };
+
+  const handleSchedule = async (id: string) => {
+    const hours = prompt('Nhập số giờ đếm ngược để đăng (ví dụ: 2):', '2');
+    if (!hours) return;
+    const scheduleTime = new Date(Date.now() + parseInt(hours) * 3600000);
+    await fetch(`/api/posts/${id}/status`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'Đã lên lịch', scheduleTime: scheduleTime.toISOString() })
+    });
+    fetchPosts();
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Bạn có chắc muốn xoá bài này?')) return;
+    await fetch(`/api/posts/${id}`, { method: 'DELETE' });
+    fetchPosts();
+  };
+
+  const handleAcceptAiOption = async (optionContent: string) => {
+    await fetch('/api/posts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: optionContent,
+        status: composerMode === 'now' ? 'Đã đăng' : (postMode === 'auto' ? 'Đã lên lịch' : 'Chờ duyệt'),
+        scheduleTime: composerMode === 'schedule' ? new Date(Date.now() + 86400000).toISOString() : null
+      })
+    });
+    setIsComposerOpen(false);
+    setAiOptions([]);
+    setComposerTopic('');
+    setComposerContent('');
+    fetchPosts();
+  };
+
+  const activeCounts = {
+    pending: dbPosts.filter(p => p.status === 'Chờ duyệt').length,
+    scheduled: dbPosts.filter(p => p.status === 'Đã lên lịch').length,
+    published: dbPosts.filter(p => p.status === 'Đã đăng').length,
+    drafts: dbPosts.filter(p => p.status === 'Bản nháp').length,
+  };
+
+  const FILTERS = [
+    `Chờ duyệt (${activeCounts.pending})`,
+    `Đã lên lịch (${activeCounts.scheduled})`,
+    'Đã đăng',
+    'Bản nháp'
+  ];
+
+
   const filteredPosts = useMemo(() => {
     let filterStatus = '';
     if (activeFilter.includes('Chờ duyệt')) filterStatus = 'Chờ duyệt';
@@ -27,8 +102,10 @@ export default function Content() {
     else if (activeFilter.includes('Đã đăng')) filterStatus = 'Đã đăng';
     else filterStatus = 'Bản nháp';
 
-    return mockPosts.filter(post => post.status === filterStatus);
-  }, [activeFilter]);
+    return dbPosts.filter(post => post.status === filterStatus);
+  }, [activeFilter, dbPosts]);
+
+  
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -51,16 +128,34 @@ export default function Content() {
     setShowAutoConfirm(false);
   };
 
-  const generateAIPost = () => {
+  const generateAIPost = async () => {
+    if (!composerTopic) return;
     setIsGenerating(true);
-    setTimeout(() => {
-      setAiOptions([
-        "🎉 Cập nhật cửa hàng: Dòng sản phẩm mới đã chính thức lên kệ! Thiết kế tối giản, công năng vượt trội, phù hợp cho mọi không gian sống hiện đại.",
-        "Mách bạn bí quyết nhỏ: Sự tối giản không chỉ nằm ở thiết kế mà còn ở trải nghiệm. Khám phá ngay dòng sản phẩm mới của chúng tôi để cảm nhận sự khác biệt.",
-        "Cuối tuần rực rỡ với BST mới nhất! Đừng bỏ lỡ cơ hội sở hữu với mức giá ưu đãi đặc biệt trong tuần ra mắt."
-      ]);
+    try {
+      const response = await fetch('/api/ai/generate-post', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          topic: composerTopic,
+          goal: composerGoal
+        })
+      });
+      
+      const data = await response.json();
+      if (data.success && data.options) {
+        setAiOptions(data.options);
+      } else {
+        console.error("AI Generation failed:", data.error);
+        alert("Lỗi khi tạo bài viết: " + (data.error || "Unknown error"));
+      }
+    } catch (error) {
+      console.error("Error calling AI API:", error);
+      alert("Không thể kết nối đến máy chủ AI.");
+    } finally {
       setIsGenerating(false);
-    }, 1500);
+    }
   };
 
   return (
@@ -72,7 +167,7 @@ export default function Content() {
           <div className="flex items-center gap-3 mb-2">
             <h1 className="font-headline-sm text-3xl font-bold text-on-surface tracking-tight">AI Viết - Đăng Bài</h1>
             <span className="font-mono text-xs font-bold tracking-wider text-primary bg-primary/10 border border-primary/20 px-2.5 py-1 rounded-full uppercase">
-              3 BÀI CHỜ DUYỆT
+              {activeCounts.pending} BÀI CHỜ DUYỆT
             </span>
           </div>
           <p className="text-on-surface-variant text-sm">AI tự viết bài, bạn duyệt hoặc để AI đăng tự động</p>
@@ -153,7 +248,7 @@ export default function Content() {
           <div>
             <h3 className="font-mono text-[11px] font-bold tracking-wider text-on-surface-variant uppercase mb-1">CHỜ DUYỆT</h3>
             <div className="flex items-baseline gap-2">
-              <span className="font-headline-sm text-3xl font-bold text-on-surface">3</span>
+              <span className="font-headline-sm text-3xl font-bold text-on-surface">{activeCounts.pending}</span>
             </div>
             <p className="text-xs text-on-surface-variant mt-1 font-medium">Cần bạn xem qua</p>
           </div>
@@ -164,7 +259,7 @@ export default function Content() {
           <div>
             <h3 className="font-mono text-[11px] font-bold tracking-wider text-on-surface-variant uppercase mb-1">ĐÃ LÊN LỊCH</h3>
             <div className="flex items-baseline gap-2">
-              <span className="font-headline-sm text-3xl font-bold text-on-surface">5</span>
+              <span className="font-headline-sm text-3xl font-bold text-on-surface">{activeCounts.scheduled}</span>
             </div>
             <p className="text-xs text-on-surface-variant mt-1 font-medium">Sẽ tự đăng đúng giờ</p>
           </div>
@@ -175,7 +270,7 @@ export default function Content() {
           <div>
             <h3 className="font-mono text-[11px] font-bold tracking-wider text-on-surface-variant uppercase mb-1">ĐÃ ĐĂNG TUẦN NÀY</h3>
             <div className="flex items-baseline gap-2">
-              <span className="font-headline-sm text-3xl font-bold text-on-surface">12</span>
+              <span className="font-headline-sm text-3xl font-bold text-on-surface">{activeCounts.published}</span>
             </div>
           </div>
           <div className="flex items-center gap-1.5 text-xs font-bold text-green-400 bg-green-400/10 self-start px-2 py-1 rounded-md mt-auto">
@@ -226,13 +321,25 @@ export default function Content() {
               <span className={clsx("px-2.5 py-1 rounded-full text-[11px] font-bold tracking-wider border", getStatusColor(post.status))}>
                 {post.status.toUpperCase()}
               </span>
-              <button className="text-on-surface-variant hover:text-on-surface p-1 rounded-md hover:bg-surface-variant transition-colors">
-                <span className="material-symbols-outlined text-[18px]">more_vert</span>
-              </button>
+              <div className="flex gap-2">
+                {post.status === 'Chờ duyệt' && (
+                  <>
+                    <button onClick={() => handleApprove(post.id)} className="text-green-500 hover:bg-green-500/10 p-1 rounded-md transition-colors" title="Duyệt đăng">
+                      <span className="material-symbols-outlined text-[18px]">check_circle</span>
+                    </button>
+                    <button onClick={() => handleSchedule(post.id)} className="text-blue-500 hover:bg-blue-500/10 p-1 rounded-md transition-colors" title="Lên lịch">
+                      <span className="material-symbols-outlined text-[18px]">schedule</span>
+                    </button>
+                  </>
+                )}
+                <button onClick={() => handleDelete(post.id)} className="text-error hover:bg-error/10 p-1 rounded-md transition-colors" title="Xóa">
+                  <span className="material-symbols-outlined text-[18px]">delete</span>
+                </button>
+              </div>
             </div>
 
             {/* Image Placeholder */}
-            {post.hasImage && (
+            {(post.platforms === 'has_image') && (
               <div className="h-[180px] min-h-[180px] max-h-[180px] flex-none w-full relative overflow-hidden bg-surface-variant flex items-center justify-center">
                 <div className="absolute inset-0 bg-gradient-to-br from-surface-variant to-surface-container-high opacity-50"></div>
                 <span className="material-symbols-outlined text-4xl text-on-surface-variant opacity-20">image</span>
@@ -248,19 +355,19 @@ export default function Content() {
               <div className="space-y-3">
                 <div className="flex items-center gap-1.5 text-xs font-medium text-on-surface-variant/80">
                   <span className="material-symbols-outlined text-[14px] text-primary/80">auto_awesome</span>
-                  {post.aiTime}
+                  {`AI viết lúc ${new Date(post.created_at).toLocaleTimeString('vi-VN')} ngày ${new Date(post.created_at).toLocaleDateString('vi-VN')}`}
                 </div>
                 
                 <div className="flex items-center gap-1.5 text-xs font-bold text-on-surface">
                   <span className="material-symbols-outlined text-[14px]">schedule</span>
-                  {post.scheduleTime}
+                  {(post.scheduled_for ? `Đăng lúc: ${new Date(post.scheduled_for).toLocaleTimeString('vi-VN')} ${new Date(post.scheduled_for).toLocaleDateString('vi-VN')}` : 'Chưa đặt lịch')}
                 </div>
 
-                {post.status === 'Đã đăng' && post.stats && (
+                {post.status === 'Đã đăng' && null && (
                   <div className="flex items-center gap-4 text-xs font-bold text-on-surface pt-3 border-t border-outline-variant/50">
-                    <span className="flex items-center gap-1"><span className="material-symbols-outlined text-[16px] text-primary">thumb_up</span> {post.stats.likes}</span>
-                    <span className="flex items-center gap-1"><span className="material-symbols-outlined text-[16px] text-primary">chat_bubble</span> {post.stats.comments}</span>
-                    <span className="flex items-center gap-1"><span className="material-symbols-outlined text-[16px] text-primary">share</span> {post.stats.shares}</span>
+                    <span className="flex items-center gap-1"><span className="material-symbols-outlined text-[16px] text-primary">thumb_up</span> {null.likes}</span>
+                    <span className="flex items-center gap-1"><span className="material-symbols-outlined text-[16px] text-primary">chat_bubble</span> {null.comments}</span>
+                    <span className="flex items-center gap-1"><span className="material-symbols-outlined text-[16px] text-primary">share</span> {null.shares}</span>
                   </div>
                 )}
               </div>
@@ -306,7 +413,7 @@ export default function Content() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
           <div 
             className="absolute inset-0 bg-background/80 backdrop-blur-sm transition-opacity duration-300"
-            onClick={() => setIsComposerOpen(false)}
+            onClick={() => { setIsComposerOpen(false); setAiOptions([]); }}
           ></div>
           <div className="relative w-full max-w-[640px] max-h-[90vh] bg-surface-container-high border border-primary/30 rounded-2xl shadow-[0_0_40px_rgba(0,229,255,0.1)] flex flex-col animate-in zoom-in-95 duration-300 overflow-hidden">
             {/* Header */}

@@ -1,17 +1,29 @@
 const fs = require('fs');
+let content = fs.readFileSync('src/pages/Connections.tsx', 'utf-8');
 
-let content = fs.readFileSync('src/pages/Connections.tsx', 'utf8');
-
-// Update selectedPlatform state to include connectionType and selectionLabel
+// I need to clean up around line 490 and 560
+// First, around line 490 (account header)
 content = content.replace(
-  /const \[selectedPlatform, setSelectedPlatform\] = useState<\{[^\}]+\} \| null>\(null\);/,
-  "const [selectedPlatform, setSelectedPlatform] = useState<{id: string, name: string, icon: string, connectionType?: string, selectionLabel?: string} | null>(null);"
+  /{clsx\("w-1.5 h-1.5 rounded-full", getStatusDot\(account.status\)\)}><\/span>\s*\{account.status\}\s*<\/span>\s*{\/\*\s*<span className="material-symbols-outlined text-\[20px\]">delete<\/span>\s*<\/button>/g,
+  `{clsx("w-1.5 h-1.5 rounded-full", getStatusDot(account.status))}></span>
+                  {account.status}
+                </span>`
 );
 
-// Update all onClick handlers setting selectedPlatform in Step 1
-content = content.replace(
-  /onClick=\{\(\) => setSelectedPlatform\(\{ id: channel\.id, name: channel\.name, icon: channel\.icon \}\)\}/g,
-  "onClick={() => setSelectedPlatform({ id: channel.id, name: channel.name, icon: channel.icon, connectionType: channel.connectionType, selectionLabel: channel.selectionLabel })}"
-);
+// Actually, let's just restore original state if possible, or manually fix the lines.
+// It's safer to read line by line.
+const lines = content.split('\n');
+let newLines = [];
+let skip = false;
+for (let i = 0; i < lines.length; i++) {
+  if (lines[i].includes('<!--') || lines[i].includes('{/*') && lines[i+1]?.includes('delete')) {
+    if (lines[i].match(/^\s*{\/\*\s*$/) || lines[i].match(/^\s*<!--\s*$/)) {
+      // Skip this line and the next 2 lines
+      i += 2;
+      continue;
+    }
+  }
+  newLines.push(lines[i]);
+}
 
-fs.writeFileSync('src/pages/Connections.tsx', content);
+fs.writeFileSync('src/pages/Connections.tsx', newLines.join('\n'));

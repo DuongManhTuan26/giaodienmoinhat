@@ -1,6 +1,6 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { clsx } from 'clsx';
-import { connectedAccounts, mockSubPagesToSelect, socialChannels, adChannels, communicationChannels } from '../data/mockApi';
+import { connectedAccounts as mockConnectedAccounts, mockSubPagesToSelect, socialChannels, adChannels, communicationChannels } from '../data/mockApi';
 
 export default function Connections() {
   const [bannerState, setBannerState] = useState<'normal' | 'warning' | 'danger'>('normal');
@@ -9,6 +9,105 @@ export default function Connections() {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [loginSuccess, setLoginSuccess] = useState(false);
   const [selectedPages, setSelectedPages] = useState<string[]>([]);
+
+  const [dbPages, setDbPages] = useState<any[]>([]);
+
+  const fetchPages = async () => {
+    try {
+      const response = await fetch('/api/zernio/pages');
+      const data = await response.json();
+      if (data.success) {
+        setDbPages(data.data);
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  useEffect(() => {
+    fetchPages();
+  }, []);
+
+  const handleFinishConnection = async () => {
+    if (selectedPlatform?.connectionType === 'oauth_with_selection') {
+      for (const pid of selectedPages) {
+        const pageDef = mockSubPagesToSelect.find(p => p.id === pid);
+        if (pageDef) {
+          await fetch('/api/zernio/pages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: pageDef.id + '-' + Date.now(), name: pageDef.name, platform: selectedPlatform.id })
+          });
+        }
+      }
+    } else {
+      await fetch('/api/zernio/pages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: selectedPlatform!.id + '-' + Date.now(), name: selectedPlatform!.name + ' Account', platform: selectedPlatform!.id })
+      });
+    }
+    await fetchPages();
+    setConnectStep(0);
+    setLoginSuccess(false);
+    setSelectedPages([]);
+  };
+
+  const handleDisconnectAccount = async (platformId: string) => {
+    if (!window.confirm('Bạn có chắc chắn muốn ngắt kết nối tài khoản này?')) return;
+    const pagesToDelete = dbPages.filter(p => p.platform === platformId);
+    for (const p of pagesToDelete) {
+      await fetch(`/api/zernio/pages/${p.id}`, { method: 'DELETE' });
+    }
+    fetchPages();
+  };
+
+  const handleDisconnectPage = async (pageId: string) => {
+    if (!window.confirm('Ngắt kết nối trang này?')) return;
+    await fetch(`/api/zernio/pages/${pageId}`, { method: 'DELETE' });
+    fetchPages();
+  };
+
+  const liveConnectedAccounts = [];
+  const groupedByPlatform = dbPages.reduce((acc, page) => {
+    if (!acc[page.platform]) acc[page.platform] = [];
+    acc[page.platform].push(page);
+    return acc;
+  }, {} as Record<string, any[]>);
+
+  for (const [platform, pages] of Object.entries(groupedByPlatform) as unknown as [string, any[]][]) {
+    const channelInfo = [...socialChannels, ...adChannels, ...communicationChannels].find(c => c.id === platform) || { name: platform, icon: 'public' };
+    
+    liveConnectedAccounts.push({
+      id: platform + '_acc',
+      platformId: platform,
+      platformName: channelInfo.name,
+      platformIcon: channelInfo.icon,
+      accountName: "Tài khoản kết nối",
+      connectionDate: new Date(pages[0].created_at || Date.now()).toLocaleDateString('vi-VN'),
+      expiryDate: "Vô hạn",
+      status: "Đang hoạt động",
+      permissions: [
+        { name: "Truy cập trang", granted: true },
+        { name: "Quản lý nội dung", granted: true },
+        { name: "Đọc và trả lời tin nhắn", granted: true }
+      ],
+      pages: pages.map((p: any) => ({
+        id: p.id,
+        name: p.name,
+        avatar: 'https://ui-avatars.com/api/?name=' + encodeURIComponent(p.name) + '&background=random',
+        status: p.connected ? 'Đang hoạt động' : 'Mất kết nối',
+        messagesProcessed: 0,
+        commentsReplied: 0
+      }))
+    });
+  }
+
+  const isPlatformConnected = (pid: string) => dbPages.some(p => p.platform === pid && p.connected);
+  const liveSocialChannels = socialChannels.map(c => ({ ...c, connected: isPlatformConnected(c.id) }));
+  const liveAdChannels = adChannels.map(c => ({ ...c, connected: isPlatformConnected(c.id) }));
+  const liveCommChannels = communicationChannels.map(c => ({ ...c, connected: isPlatformConnected(c.id) }));
+
   const topGridRef = useRef<HTMLDivElement>(null);
 
   const handleOpenConnect = (platform?: {id: string, name: string, icon: string, connectionType?: string, selectionLabel?: string, requestedPermissions?: any[], publishOnly?: boolean, warnings?: string[], instructions?: string[]}) => {
@@ -87,7 +186,7 @@ export default function Connections() {
           <div className="flex items-center gap-3 mb-2">
             <h1 className="font-headline-sm text-3xl font-bold text-on-surface tracking-tight">Kết nối</h1>
             <span className="font-mono text-xs font-bold tracking-wider text-primary bg-primary/10 border border-primary/20 px-2.5 py-1 rounded-full uppercase">
-              2/3 KÊNH ĐÃ KẾT NỐI
+              {Object.keys(groupedByPlatform).length}/3 KÊNH ĐÃ KẾT NỐI
             </span>
           </div>
           <p className="text-on-surface-variant text-sm">Kết nối các kênh bán hàng để AI bắt đầu làm việc cho bạn</p>
@@ -126,7 +225,7 @@ export default function Connections() {
             </div>
             <div>
               <h3 className="text-base font-bold text-on-surface mb-0.5">Tất cả kết nối đang hoạt động tốt</h3>
-              <p className="text-sm text-on-surface-variant font-medium">AI đang chạy trên 2 trang</p>
+              <p className="text-sm text-on-surface-variant font-medium">AI đang chạy trên {dbPages.length} trang</p>
             </div>
           </div>
         )}
@@ -181,7 +280,7 @@ export default function Connections() {
               Mạng xã hội
             </h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {socialChannels.map((channel) => (
+              {liveSocialChannels.map((channel) => (
                 <button
                   key={channel.id}
                   onClick={() => {
@@ -251,7 +350,7 @@ export default function Connections() {
               Tài khoản quảng cáo
             </h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 mb-3">
-              {adChannels.map((channel) => (
+              {liveAdChannels.map((channel) => (
                 <button
                   key={channel.id}
                   onClick={() => {
@@ -310,7 +409,7 @@ export default function Connections() {
               Tin nhắn và điện thoại
             </h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 mb-3">
-              {communicationChannels.map((channel) => (
+              {liveCommChannels.map((channel) => (
                 <button
                   key={channel.id}
                   onClick={() => {
@@ -372,7 +471,7 @@ export default function Connections() {
       {/* Row 2: Connections Grid */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mb-8">
         
-        {connectedAccounts.map(account => (
+        {liveConnectedAccounts.map(account => (
           <div key={account.id} className="bg-surface-container/30 border border-outline-variant rounded-2xl p-6 flex flex-col hover:border-primary/30 transition-colors group relative overflow-hidden">
             {/* Header */}
             <div className="flex items-start justify-between mb-6 pb-6 border-b border-outline-variant/50">
@@ -390,9 +489,6 @@ export default function Connections() {
                   <span className={clsx("w-1.5 h-1.5 rounded-full", getStatusDot(account.status))}></span>
                   {account.status}
                 </span>
-                <button className="w-8 h-8 flex items-center justify-center rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-variant transition-colors">
-                  <span className="material-symbols-outlined text-[20px]">more_vert</span>
-                </button>
               </div>
             </div>
 
@@ -465,9 +561,6 @@ export default function Connections() {
                       </div>
                     </div>
                   </div>
-                  <button className="w-8 h-8 flex items-center justify-center rounded-full text-on-surface-variant hover:text-on-surface hover:bg-surface-variant transition-colors">
-                    <span className="material-symbols-outlined text-[20px]">more_vert</span>
-                  </button>
                 </div>
               ))}
             </div>
@@ -479,7 +572,7 @@ export default function Connections() {
                 className="flex-1 py-2.5 px-4 bg-surface-container border border-outline-variant text-on-surface font-bold rounded-xl hover:bg-surface-variant transition-colors">
                 Thêm trang từ tài khoản này
               </button>
-              <button className="flex-1 py-2.5 px-4 bg-surface-container border border-error/50 text-error font-bold rounded-xl hover:bg-error/10 hover:border-error transition-colors">
+              <button onClick={() => handleDisconnectAccount(account.platformId)} className="flex-1 py-2.5 px-4 bg-surface-container border border-error/50 text-error font-bold rounded-xl hover:bg-error/10 hover:border-error transition-colors">
                 Ngắt kết nối cả tài khoản
               </button>
             </div>
@@ -542,7 +635,7 @@ export default function Connections() {
                     <div>
                       <h3 className="font-mono text-sm font-bold tracking-wider text-on-surface-variant uppercase mb-4">MẠNG XÃ HỘI</h3>
                       <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3">
-                        {socialChannels.map((channel) => (
+                        {liveSocialChannels.map((channel) => (
                           <button
                             key={channel.id}
                             onClick={() => setSelectedPlatform({ id: channel.id, name: channel.name, icon: channel.icon, connectionType: channel.connectionType || 'oauth_simple', selectionLabel: channel.selectionLabel })}
@@ -562,7 +655,7 @@ export default function Connections() {
                     <div>
                       <h3 className="font-mono text-sm font-bold tracking-wider text-on-surface-variant uppercase mb-4">TÀI KHOẢN QUẢNG CÁO</h3>
                       <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3">
-                        {adChannels.map((channel) => (
+                        {liveAdChannels.map((channel) => (
                           <button
                             key={channel.id}
                             onClick={() => setSelectedPlatform({ id: channel.id, name: channel.name, icon: channel.icon, connectionType: channel.connectionType || 'oauth_simple', selectionLabel: channel.selectionLabel })}
@@ -582,7 +675,7 @@ export default function Connections() {
                     <div>
                       <h3 className="font-mono text-sm font-bold tracking-wider text-on-surface-variant uppercase mb-4">TIN NHẮN VÀ ĐIỆN THOẠI</h3>
                       <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3">
-                        {communicationChannels.map((channel) => (
+                        {liveCommChannels.map((channel) => (
                           <button
                             key={channel.id}
                             onClick={() => setSelectedPlatform({ id: channel.id, name: channel.name, icon: channel.icon, connectionType: channel.connectionType || 'oauth_simple', selectionLabel: channel.selectionLabel })}
@@ -945,9 +1038,7 @@ export default function Connections() {
                       </button>
                     )}
                     <button 
-                      onClick={() => {
-                        setConnectStep(0);
-                      }}
+                      onClick={handleFinishConnection}
                       className="flex-1 py-3.5 px-4 bg-primary text-on-primary font-bold text-lg rounded-xl shadow-[0_4px_15px_rgba(0,229,255,0.4)] hover:scale-[1.02] transition-transform flex items-center justify-center gap-2"
                     >
                       Hoàn tất kết nối

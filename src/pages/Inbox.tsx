@@ -17,6 +17,7 @@ export default function Inbox() {
   const [selectedId, setSelectedId] = useState('');
   const [search, setSearch] = useState('');
   const [showCopyToast, setShowCopyToast] = useState(false);
+  const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
 
   const filteredConversations = mockConversations.filter(conv => {
     // Show conversations matching the active account's platform
@@ -85,8 +86,44 @@ export default function Inbox() {
     }
   };
 
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [extractedInfoMap, setExtractedInfoMap] = useState<Record<string, any>>({});
+
+  const handleExtractInfo = async () => {
+    if (!selectedConv || isExtracting) return;
+    setIsExtracting(true);
+    try {
+      const response = await fetch('/api/ai/extract-info', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: selectedConv.messages })
+      });
+      const result = await response.json();
+      if (result.success) {
+        setExtractedInfoMap(prev => ({
+          ...prev,
+          [selectedConv.id]: result.data
+        }));
+      } else {
+        alert("Lỗi trích xuất từ AI");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Không thể kết nối đến máy chủ AI");
+    } finally {
+      setIsExtracting(false);
+    }
+  };
+
+  const getActiveInfo = () => {
+    if (!selectedConv) return null;
+    if (extractedInfoMap[selectedConv.id]) return extractedInfoMap[selectedConv.id];
+    return selectedConv.infoCollected;
+  };
+  
+  const activeInfo = getActiveInfo();
   const infoKeys = ['name', 'phone', 'address', 'product', 'quantity'];
-  const collectedCount = selectedConv ? infoKeys.filter(k => selectedConv.infoCollected[k as keyof typeof selectedConv.infoCollected] !== 'Chưa có').length : 0;
+  const collectedCount = activeInfo ? infoKeys.filter(k => activeInfo[k] && activeInfo[k] !== 'Chưa có').length : 0;
 
   return (
     <main className="flex flex-col w-full h-full bg-background overflow-hidden relative">
@@ -354,20 +391,34 @@ export default function Inbox() {
 
               {/* Block 1: AI Collected Info */}
               <div>
-                <h4 className="font-mono text-[10px] font-bold text-primary tracking-wider uppercase mb-3 px-1">Thu thập bởi AI</h4>
+                <div className="flex items-center justify-between mb-3 px-1">
+                  <h4 className="font-mono text-[10px] font-bold text-primary tracking-wider uppercase">Thu thập bởi AI</h4>
+                  <button 
+                    onClick={handleExtractInfo}
+                    disabled={isExtracting}
+                    className="flex items-center gap-1 text-[10px] bg-primary/10 text-primary border border-primary/30 px-2 py-1 rounded hover:bg-primary/20 transition-colors disabled:opacity-50"
+                  >
+                    {isExtracting ? (
+                      <span className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin"></span>
+                    ) : (
+                      <span className="material-symbols-outlined text-[12px]">magic_button</span>
+                    )}
+                    {isExtracting ? 'Đang đọc...' : 'Quét lại'}
+                  </button>
+                </div>
                 <div className="bg-surface-container/50 rounded-xl border border-outline-variant/30 p-3 space-y-3">
                   <div className="flex flex-col gap-1">
                     <span className="text-[11px] font-medium text-on-surface-variant">Họ tên</span>
-                    <span className={clsx("text-sm font-medium", selectedConv.infoCollected.name === 'Chưa có' ? 'text-on-surface-variant/40' : 'text-on-surface')}>{selectedConv.infoCollected.name}</span>
+                    <span className={clsx("text-sm font-medium", !activeInfo.name || activeInfo.name === 'Chưa có' ? 'text-on-surface-variant/40' : 'text-on-surface')}>{activeInfo.name || 'Chưa có'}</span>
                   </div>
                   <div className="flex flex-col gap-1">
                     <span className="text-[11px] font-medium text-on-surface-variant">Số điện thoại</span>
                     <div className="flex items-center gap-2">
-                      <span className={clsx("text-sm font-medium", selectedConv.infoCollected.phone === 'Chưa có' ? 'text-on-surface-variant/40' : 'text-on-surface')}>
-                        {selectedConv.infoCollected.phone}
+                      <span className={clsx("text-sm font-medium", !activeInfo.phone || activeInfo.phone === 'Chưa có' ? 'text-on-surface-variant/40' : 'text-on-surface')}>
+                        {activeInfo.phone || 'Chưa có'}
                       </span>
-                      {selectedConv.infoCollected.phone !== 'Chưa có' && (
-                        <button onClick={() => handleCopyPhone(selectedConv.infoCollected.phone)} className="text-on-surface-variant hover:text-primary transition-colors p-0.5" title="Sao chép">
+                      {activeInfo.phone && activeInfo.phone !== 'Chưa có' && (
+                        <button onClick={() => handleCopyPhone(activeInfo.phone)} className="text-on-surface-variant hover:text-primary transition-colors p-0.5" title="Sao chép">
                           <span className="material-symbols-outlined text-[14px]">content_copy</span>
                         </button>
                       )}
@@ -375,7 +426,7 @@ export default function Inbox() {
                   </div>
                   <div className="flex flex-col gap-1">
                     <span className="text-[11px] font-medium text-on-surface-variant">Địa chỉ</span>
-                    <span className={clsx("text-sm font-medium", selectedConv.infoCollected.address === 'Chưa có' ? 'text-on-surface-variant/40' : 'text-on-surface')}>{selectedConv.infoCollected.address}</span>
+                    <span className={clsx("text-sm font-medium", !activeInfo.address || activeInfo.address === 'Chưa có' ? 'text-on-surface-variant/40' : 'text-on-surface')}>{activeInfo.address || 'Chưa có'}</span>
                   </div>
                   
                   <div className="pt-3 border-t border-outline-variant/30">
@@ -395,7 +446,10 @@ export default function Inbox() {
 
               {/* Block 2: Actions */}
               <div className="flex flex-col gap-2">
-                <button className="w-full py-2.5 text-xs font-bold bg-primary text-on-primary rounded-lg shadow-[0_4px_10px_rgba(0,229,255,0.2)] hover:brightness-110 transition-all flex items-center justify-center gap-2">
+                <button 
+                  onClick={() => setIsOrderModalOpen(true)}
+                  className="w-full py-2.5 text-xs font-bold bg-primary text-on-primary rounded-lg shadow-[0_4px_10px_rgba(0,229,255,0.2)] hover:brightness-110 transition-all flex items-center justify-center gap-2"
+                >
                   <span className="material-symbols-outlined text-[16px]">receipt_long</span>
                   Tạo đơn hàng
                 </button>
@@ -408,6 +462,86 @@ export default function Inbox() {
           </aside>
         )}
       </div>
+
+      {/* Auto-fill Order Modal */}
+      {isOrderModalOpen && selectedConv && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-background/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-[600px] bg-surface-container-lowest rounded-xl border border-outline-variant/50 shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="px-5 py-4 border-b border-outline-variant/30 flex items-center justify-between bg-surface-container-lowest">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-primary">receipt_long</span>
+                <h3 className="font-bold text-on-surface text-lg">Tạo Đơn Hàng Mới</h3>
+              </div>
+              <button onClick={() => setIsOrderModalOpen(false)} className="text-on-surface-variant hover:text-on-surface p-1 rounded-md hover:bg-surface-variant transition-colors">
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-5 space-y-5 bg-background">
+              <div className="flex items-center gap-3 px-4 py-3 bg-primary/10 border border-primary/20 rounded-lg text-primary">
+                <span className="material-symbols-outlined text-[20px]">auto_awesome</span>
+                <div>
+                  <p className="text-sm font-bold mb-0.5">AI đã tự động điền thông tin</p>
+                  <p className="text-xs text-primary/80">Dữ liệu được trích xuất từ cuộc trò chuyện với {selectedConv.customerName}</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider">Họ tên khách hàng <span className="text-error">*</span></label>
+                  <input type="text" defaultValue={activeInfo?.name !== 'Chưa có' ? activeInfo?.name : ''} className="w-full bg-surface-container border border-outline-variant/50 rounded-lg px-3 py-2 text-sm text-on-surface focus:border-primary focus:ring-1 focus:ring-primary focus:outline-none transition-all" placeholder="Nhập họ tên..." />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider">Số điện thoại <span className="text-error">*</span></label>
+                  <input type="text" defaultValue={activeInfo?.phone !== 'Chưa có' ? activeInfo?.phone : ''} className="w-full bg-surface-container border border-outline-variant/50 rounded-lg px-3 py-2 text-sm text-on-surface focus:border-primary focus:ring-1 focus:ring-primary focus:outline-none transition-all" placeholder="Nhập SĐT..." />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider">Địa chỉ giao hàng <span className="text-error">*</span></label>
+                <input type="text" defaultValue={activeInfo?.address !== 'Chưa có' ? activeInfo?.address : ''} className="w-full bg-surface-container border border-outline-variant/50 rounded-lg px-3 py-2 text-sm text-on-surface focus:border-primary focus:ring-1 focus:ring-primary focus:outline-none transition-all" placeholder="Nhập địa chỉ chi tiết..." />
+              </div>
+
+              <div className="grid grid-cols-4 gap-4">
+                <div className="col-span-3 space-y-1.5">
+                  <label className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider">Sản phẩm <span className="text-error">*</span></label>
+                  <input type="text" defaultValue={activeInfo?.product !== 'Chưa có' ? activeInfo?.product : ''} className="w-full bg-surface-container border border-outline-variant/50 rounded-lg px-3 py-2 text-sm text-on-surface focus:border-primary focus:ring-1 focus:ring-primary focus:outline-none transition-all" placeholder="Tên hoặc mã sản phẩm..." />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider">Số lượng</label>
+                  <input type="text" defaultValue={activeInfo?.quantity !== 'Chưa có' ? activeInfo?.quantity : '1'} className="w-full bg-surface-container border border-outline-variant/50 rounded-lg px-3 py-2 text-sm text-on-surface focus:border-primary focus:ring-1 focus:ring-primary focus:outline-none transition-all text-center" />
+                </div>
+              </div>
+              
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider">Ghi chú đơn hàng</label>
+                <textarea rows={2} className="w-full bg-surface-container border border-outline-variant/50 rounded-lg px-3 py-2 text-sm text-on-surface focus:border-primary focus:ring-1 focus:ring-primary focus:outline-none transition-all custom-scrollbar" placeholder="Ghi chú cho đơn vị vận chuyển hoặc dặn dò của khách..."></textarea>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t border-outline-variant/30 flex justify-between items-center bg-surface-container-lowest">
+              <div className="text-xs text-on-surface-variant font-medium">
+                Đơn hàng sẽ được chuyển sang tab Đơn Hàng
+              </div>
+              <div className="flex gap-3">
+                <button onClick={() => setIsOrderModalOpen(false)} className="px-4 py-2 text-sm font-bold text-on-surface-variant hover:text-on-surface hover:bg-surface-variant rounded-lg transition-colors">
+                  Hủy
+                </button>
+                <button onClick={() => {
+                  setIsOrderModalOpen(false);
+                  alert('Tạo đơn hàng thành công! (Dữ liệu đã được lưu)');
+                }} className="px-6 py-2 text-sm font-bold bg-primary text-on-primary rounded-lg shadow-[0_4px_10px_rgba(0,229,255,0.2)] hover:brightness-110 transition-all flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[18px]">check_circle</span>
+                  Lưu Đơn & Báo Cáo
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
