@@ -225,29 +225,49 @@ export async function handleCommentReceived(event: CommentEvent): Promise<void> 
   ]);
 
   /*
-   * CHỐT CHẶN META: mỗi người chỉ được nhắn riêng một lần cho mỗi bài đăng.
-   * Kiểm tra ở đây để tránh gọi API vô ích; khoá duy nhất trong database là
-   * lớp bảo vệ cuối nếu hai sự kiện đến cùng lúc.
+   * TRẢ LỜI CÔNG KHAI — luôn làm, không phụ thuộc việc đã nhắn riêng hay chưa.
+   *
+   * Bản trước đặt bước này SAU chốt chặn nhắn tin riêng, nên khi một người
+   * bình luận lần thứ hai dưới cùng bài, cả luồng bị bỏ qua và bình luận đó
+   * không được trả lời gì cả. Chủ shop phát hiện đúng: khách hỏi "giá như nào
+   * vậy" mà Trang im lặng.
+   *
+   * Quy định một lần của Meta chỉ áp cho TIN NHẮN RIÊNG. Trả lời công khai
+   * không có giới hạn nào — và một shop bình thường phải trả lời mọi bình luận.
+   *
+   * Ghi chú về cấu trúc lồng: Facebook chỉ cho hai tầng (bình luận gốc và trả
+   * lời). Với bình luận đã là trả lời, phải gửi vào bình luận GỐC để nằm cùng
+   * luồng; gửi vào chính nó thì Zernio trả 200 nhưng Facebook đặt trả lời ở
+   * tầng khác với mong đợi.
    */
-  const alreadyMessaged = await queryOne(
-    `SELECT id FROM comments
-      WHERE user_id = $1 AND platform_post_id = $2 AND author_id = $3
-        AND private_replied_at IS NOT NULL`,
-    [account.user_id, platformPostId, authorId]
-  );
+  const replyTarget =
+    comment.isReply === true && comment.parentCommentId
+      ? comment.parentCommentId
+      : comment.id;
 
-  if (alreadyMessaged) {
-    await markSkipped(
-      comment.id,
-      "Đã nhắn tin riêng cho người này dưới bài đăng này, không nhắn lại theo quy định của Meta"
-    );
-    return;
+  if (matched.public_reply_enabled && matched.public_reply_text?.trim()) {
+    try {
+      await zernio.replyToComment({
+        postId: platformPostId,
+        commentId: replyTarget,
+        accountId,
+        text: matched.public_reply_text.trim(),
+      });
+      await query("UPDATE comments SET public_replied_at = now() WHERE id = $1", [comment.id]);
+      console.log(`[bình luận] Đã trả lời công khai ${comment.id}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[bình luận] Không trả lời công khai được ${comment.id}: ${message}`);
+      await query("UPDATE comments SET last_error = $2 WHERE id = $1", [
+        comment.id,
+        message.slice(0, 500),
+      ]);
+    }
   }
 
   /*
-   * CHỐT CHẶN CỬA SỔ 7 NGÀY.
-   * Tài liệu Zernio ghi rõ: trả lời riêng sau bình luận phải gửi trong 7 ngày,
-   * một lần cho mỗi bình luận. Gửi ngoài hạn là vi phạm chính sách.
+   * CHỐT CHẶN CỬA SỔ 7 NGÀY cho tin nhắn riêng.
+   * Tài liệu Zernio ghi rõ: trả lời riêng sau bình luận phải gửi trong 7 ngày.
    */
   const windowCheck = commentReplyAllowed(
     comment.createdAt ? new Date(comment.createdAt) : null
@@ -257,23 +277,49 @@ export async function handleCommentReceived(event: CommentEvent): Promise<void> 
     return;
   }
 
-  // Trả lời công khai dưới bình luận, nếu kịch bản bật.
-  if (matched.public_reply_enabled && matched.public_reply_text?.trim()) {
-    try {
-      await zernio.replyToComment({
-        postId: platformPostId,
-        commentId: comment.id,
-        accountId,
-        text: matched.public_reply_text.trim(),
-      });
-      await query("UPDATE comments SET public_replied_at = now() WHERE id = $1", [comment.id]);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[bình luận] Không trả lời công khai được ${comment.id}: ${message}`);
-      await query("UPDATE comments SET last_error = $2 WHERE id = $1", [
+  /*
+   * CHỐT CHẶN META cho tin nhắn riêng: MỘT tin cho MỖI BÌNH LUẬN.
+   *
+   * Đây là đúng nguyên văn chính sách. Bản trước chặn theo (người + bài đăng),
+   * nghiêm hơn chính sách — người bình luận hai lần dưới một bài chỉ nhận được
+   * một tin, dù Meta cho phép mỗi bình luận một tin.
+   *
+   * Chủ shop bật thêm khoảng nghỉ theo người nếu muốn nhẹ tay hơn; mặc định
+   * tắt để đúng chính sách, không hơn không kém.
+   */
+  const alreadyMessagedThisComment = await queryOne(
+    `SELECT id FROM comments WHERE id = $1 AND private_replied_at IS NOT NULL`,
+    [comment.id]
+  );
+
+  if (alreadyMessagedThisComment) {
+    await markSkipped(
+      comment.id,
+      "Đã nhắn tin riêng cho chính bình luận này, mỗi bình luận chỉ một lần"
+    );
+    return;
+  }
+
+  // Khoảng nghỉ theo người — tuỳ chọn, mặc định tắt.
+  const cooldown = await queryOne<{ author_dm_cooldown_hours: number }>(
+    "SELECT author_dm_cooldown_hours FROM guardrail_configs WHERE user_id = $1",
+    [account.user_id]
+  );
+  const cooldownHours = Number(cooldown?.author_dm_cooldown_hours ?? 0);
+
+  if (cooldownHours > 0) {
+    const recent = await queryOne(
+      `SELECT id FROM comments
+        WHERE user_id = $1 AND author_id = $2 AND private_replied_at IS NOT NULL
+          AND private_replied_at > now() - ($3 || ' hours')::interval`,
+      [account.user_id, authorId, String(cooldownHours)]
+    );
+    if (recent) {
+      await markSkipped(
         comment.id,
-        message.slice(0, 500),
-      ]);
+        `Đã nhắn cho người này trong ${cooldownHours} giờ qua, chờ hết khoảng nghỉ`
+      );
+      return;
     }
   }
 
