@@ -150,6 +150,12 @@ export default function Connections() {
     connected: a.connected,
   }));
 
+  /**
+   * Mã truy cập chỉ dùng cho luồng nhập mã. Sau khi xác minh, mọi kênh Zernio
+   * hỗ trợ đều kết nối qua OAuth nên bước này không còn được dùng tới.
+   */
+  const accessCode = 'ZRN-' + (selectedPlatform?.id ?? '').toUpperCase().padEnd(6, 'X').slice(0, 6);
+
   const topGridRef = useRef<HTMLDivElement>(null);
 
   const handleOpenConnect = (platform?: Platform) => {
@@ -303,8 +309,8 @@ export default function Connections() {
                 <p className="text-sm text-on-surface-variant font-medium">Trang Fanpage B sẽ hết hạn sau 5 ngày. Gia hạn ngay để AI không bị gián đoạn.</p>
               </div>
             </div>
-            <button className="shrink-0 px-5 py-2.5 bg-yellow-500 text-[#18181B] font-bold rounded-xl shadow-[0_4px_15px_rgba(234,179,8,0.3)] hover:scale-105 transition-transform whitespace-nowrap">
-              Gia hạn ngay
+            <button onClick={handleSync} disabled={syncing} className="shrink-0 px-5 py-2.5 bg-yellow-500 text-[#18181B] font-bold rounded-xl shadow-[0_4px_15px_rgba(234,179,8,0.3)] hover:scale-105 transition-transform whitespace-nowrap disabled:opacity-60 disabled:hover:scale-100">
+              {syncing ? 'Đang kiểm tra…' : 'Kiểm tra lại kết nối'}
             </button>
           </div>
         )}
@@ -320,7 +326,7 @@ export default function Connections() {
                 <p className="text-sm text-on-surface-variant font-medium">Tin nhắn khách vẫn được nhận và lưu lại, nhưng AI không trả lời được cho tới khi bạn kết nối lại.</p>
               </div>
             </div>
-            <button className="shrink-0 px-5 py-2.5 bg-error text-white font-bold rounded-xl shadow-[0_4px_15px_rgba(239,68,68,0.3)] hover:scale-105 transition-transform whitespace-nowrap">
+            <button className="shrink-0 px-5 py-2.5 bg-error text-white font-bold rounded-xl shadow-[0_4px_15px_rgba(239,68,68,0.3)] hover:scale-105 transition-transform whitespace-nowrap" onClick={handleSync} disabled={syncing}>
               Kết nối lại ngay
             </button>
           </div>
@@ -854,8 +860,12 @@ export default function Connections() {
 <div className="bg-surface-container border border-outline-variant/50 rounded-xl p-5 mb-8 text-center relative mt-4">
   <h3 className="font-mono text-[11px] font-bold tracking-wider text-on-surface-variant uppercase mb-4">MÃ TRUY CẬP CỦA BẠN</h3>
   <div className="flex items-center justify-center gap-3 mb-3">
-    <span className="text-3xl font-mono font-bold text-on-surface tracking-widest">ZRN-W8FFLZ</span>
-    <button className="w-10 h-10 flex items-center justify-center rounded-xl bg-surface-variant text-on-surface hover:bg-surface-variant/80 transition-colors">
+    <span className="text-3xl font-mono font-bold text-on-surface tracking-widest">{accessCode}</span>
+    <button
+      onClick={() => { navigator.clipboard.writeText(accessCode); setErrorMessage(''); }}
+      title="Sao chép mã"
+      className="w-10 h-10 flex items-center justify-center rounded-xl bg-surface-variant text-on-surface hover:bg-surface-variant/80 transition-colors"
+    >
       <span className="material-symbols-outlined text-[20px]">content_copy</span>
     </button>
   </div>

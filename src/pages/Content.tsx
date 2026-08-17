@@ -286,35 +286,6 @@ export default function Content() {
     setShowAutoConfirm(false);
   };
 
-  const generateAIPost = async () => {
-    if (!composerTopic) return;
-    setIsGenerating(true);
-    try {
-      const response = await fetch('/api/ai/generate-post', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          topic: composerTopic,
-          goal: composerGoal
-        })
-      });
-      
-      const data = await response.json();
-      if (data.success && data.options) {
-        setAiOptions(data.options);
-      } else {
-        console.error("AI Generation failed:", data.error);
-        alert("Lỗi khi tạo bài viết: " + (data.error || "Unknown error"));
-      }
-    } catch (error) {
-      console.error("Error calling AI API:", error);
-      alert("Không thể kết nối đến máy chủ AI.");
-    } finally {
-      setIsGenerating(false);
-    }
-  };
 
   return (
     <main className="flex-1  p-6 md:p-8 max-w-7xl mx-auto w-full relative    bg-background">
@@ -621,7 +592,7 @@ export default function Content() {
                     >Thông báo</button>
                   </div>
                   <button 
-                    onClick={generateAIPost}
+                    onClick={handleGenerate}
                     disabled={isGenerating}
                     className="w-full py-2.5 bg-primary/10 text-primary border border-primary/30 rounded-lg font-bold text-sm hover:bg-primary/20 transition-colors flex items-center justify-center gap-2"
                   >

@@ -124,7 +124,7 @@ export const socialChannels: PlatformChannel[] = [
     { icon: 'forum', name: 'read & edit & history', desc: 'Đọc, trả lời bình luận và lịch sử tương tác.' },
     { icon: 'chat', name: 'privatemessages', desc: 'Quản lý tin nhắn riêng tư.' }
   ] },
-  { id: 'bs', name: 'Bluesky', zernioPlatform: "bluesky", canPost: true, canDm: true, canComment: true, icon: 'cloud', connectionType: 'manual_credentials',
+  { id: 'bs', name: 'Bluesky', zernioPlatform: "bluesky", canPost: true, canDm: true, canComment: true, icon: 'cloud', connectionType: 'oauth_simple',
     warnings: ['Tuyệt đối KHÔNG DÙNG mật khẩu đăng nhập chính. API hộp thư không hỗ trợ đính kèm Media.'],
     instructions: ['Mở ứng dụng Bluesky > Cài đặt > Advanced > App Passwords.', 'Tạo một mật khẩu ứng dụng mới.', 'Nhập Handle (Tên người dùng) và Mật khẩu ứng dụng vừa tạo vào bước tiếp theo.'],
     requestedPermissions: [
@@ -142,7 +142,7 @@ export const socialChannels: PlatformChannel[] = [
     requestedPermissions: [
     { icon: 'chat', name: 'whatsapp_business_messaging', desc: 'Gửi và nhận tin nhắn, quản lý hội thoại khách hàng qua WhatsApp Business.' }
   ] },
-  { id: 'tg', name: 'Telegram', zernioPlatform: "telegram", canPost: true, canDm: true, canComment: false, capabilityNote: "Hoạt động qua bot, không có bình luận.", icon: 'send', connectionType: 'access_code',
+  { id: 'tg', name: 'Telegram', zernioPlatform: "telegram", canPost: true, canDm: true, canComment: false, capabilityNote: "Hoạt động qua bot, không có bình luận.", icon: 'send', connectionType: 'oauth_simple',
     warnings: ['Chỉ hỗ trợ kết nối Kênh (Channel) hoặc Nhóm (Group).', 'Bot của chúng tôi phải được thêm làm Quản trị viên (Admin).'],
     instructions: ['Thêm Bot Zernio làm quản trị viên trong kênh/nhóm Telegram của bạn.', 'Mở hộp thoại với Bot và gửi Mã truy cập được cấp.', 'Hệ thống sẽ tự động xác nhận và hoàn tất kết nối.'],
     requestedPermissions: [
