@@ -92,6 +92,23 @@ export async function handleIncomingMessage(conversationId: string): Promise<boo
 
   if (history.length === 0) return false;
 
+  /*
+   * LỚP CHẶN VÒNG LẶP 3 — tin cuối phải là của khách.
+   *
+   * Đây là lớp cuối cùng và cũng là lớp chắc chắn nhất: dù có sự kiện lạ nào
+   * lọt qua hai lớp trên, AI cũng không bao giờ trả lời khi tin gần nhất trong
+   * hội thoại là do AI hoặc nhân viên gửi. Không có lớp này, hai sự kiện đến
+   * gần nhau có thể khiến AI trả lời chính câu nó vừa nói.
+   */
+  const lastMessage = history[history.length - 1];
+  if (lastMessage.sender_type !== "customer") {
+    console.log(
+      `[AI bán hàng] Bỏ qua hội thoại ${conversationId}: ` +
+        `tin cuối là của ${lastMessage.sender_type}, không phải của khách`
+    );
+    return false;
+  }
+
   const rules = await loadHandoffRules(conversation.user_id);
 
   // Quá nhiều lượt mà chưa chốt được thì chuyển người, tránh vòng lặp vô ích.

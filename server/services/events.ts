@@ -61,6 +61,8 @@ interface MessagePayload {
     username?: string;
     picture?: string;
     phoneNumber?: string | null;
+    /** Cờ do nền tảng gắn khi tin do chính trang gửi. */
+    isFromPage?: boolean;
   };
 }
 
@@ -76,12 +78,28 @@ async function handleMessageReceived(event: WebhookEvent): Promise<void> {
     throw new Error("Sự kiện message.received thiếu accountId");
   }
 
+  /*
+   * LỚP CHẶN VÒNG LẶP 1 — hướng tin nhắn.
+   *
+   * Zernio có thể đẩy về cả tin do chính Fanpage gửi. Không kiểm tra chỗ này
+   * thì tin của shop bị coi là tin khách, AI trả lời, tin trả lời lại quay về,
+   * và Fanpage tự nói chuyện với chính nó tới khi hết hạn mức API.
+   */
+  if (message.direction === "outgoing") {
+    console.log(
+      `[sự kiện] Bỏ qua tin do chính trang gửi (direction=outgoing) ` +
+        `trong hội thoại ${message.conversationId}`
+    );
+    return;
+  }
+
   // Tài khoản này thuộc shop nào. Đây là mấu chốt phân tách đa người thuê:
   // không tra được chủ sở hữu thì tuyệt đối không xử lý tiếp.
-  const account = await queryOne<{ user_id: number; platform: string }>(
-    "SELECT user_id, platform FROM social_accounts WHERE id = $1",
-    [accountId]
-  );
+  const account = await queryOne<{
+    user_id: number;
+    platform: string;
+    raw: Record<string, unknown>;
+  }>("SELECT user_id, platform, raw FROM social_accounts WHERE id = $1", [accountId]);
 
   if (!account) {
     // Không phải lỗi hệ thống: tài khoản có thể đã bị gỡ, hoặc thuộc một
@@ -97,6 +115,32 @@ async function handleMessageReceived(event: WebhookEvent): Promise<void> {
   const senderId = message.sender?.id;
   if (!senderId) {
     throw new Error("Sự kiện message.received thiếu sender.id");
+  }
+
+  /*
+   * LỚP CHẶN VÒNG LẶP 2 — danh tính người gửi.
+   *
+   * Lớp 1 dựa vào trường direction do Zernio gán. Lớp này không tin vào đó:
+   * so trực tiếp id người gửi với id của chính trang trên nền tảng. Nếu trùng
+   * thì đây là tin của shop, dù direction ghi gì.
+   */
+  const pagePlatformUserId = account.raw?.platformUserId;
+  if (typeof pagePlatformUserId === "string" && pagePlatformUserId.length > 0) {
+    // platformUserId của Facebook có dạng "1624325025923679:page:686754604528250",
+    // nên so cả chuỗi đầy đủ và từng phần tách bởi dấu hai chấm.
+    const parts = new Set([pagePlatformUserId, ...pagePlatformUserId.split(":")]);
+    if (parts.has(senderId)) {
+      console.log(
+        `[sự kiện] Bỏ qua tin do chính trang gửi (sender trùng id trang) ` +
+          `trong hội thoại ${message.conversationId}`
+      );
+      return;
+    }
+  }
+
+  if (message.sender?.isFromPage === true) {
+    console.log(`[sự kiện] Bỏ qua tin có cờ isFromPage trong ${message.conversationId}`);
+    return;
   }
 
   const text = typeof message.text === "string" ? message.text : "";
