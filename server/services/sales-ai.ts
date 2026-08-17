@@ -2,6 +2,7 @@ import { query, queryOne, transaction } from "../db.js";
 import { chat, chatJson, asRecord, optionalString } from "./ai.js";
 import * as zernio from "./zernio.js";
 import { sendHandoffAlert } from "./telegram.js";
+import { sendMessageSafely } from "./outbound.js";
 
 /**
  * Bộ não AI bán hàng.
@@ -35,6 +36,7 @@ interface ConversationRow {
   status: string;
   ai_enabled: boolean;
   window_expires_at: Date | null;
+  last_customer_message_at: Date | null;
 }
 
 export interface SalesDecision {
@@ -61,7 +63,7 @@ export interface SalesDecision {
 export async function handleIncomingMessage(conversationId: string): Promise<boolean> {
   const conversation = await queryOne<ConversationRow>(
     `SELECT id, user_id, social_account_id, customer_id, platform, status,
-            ai_enabled, window_expires_at
+            ai_enabled, window_expires_at, last_customer_message_at
        FROM conversations WHERE id = $1`,
     [conversationId]
   );
@@ -72,11 +74,21 @@ export async function handleIncomingMessage(conversationId: string): Promise<boo
   if (!conversation.ai_enabled || conversation.status === "human") return false;
   if (conversation.status === "waiting_human") return false;
 
-  // Hết cửa sổ 24 giờ thì nền tảng chặn gửi, gọi AI chỉ tốn tiền vô ích.
-  if (
-    conversation.window_expires_at &&
-    conversation.window_expires_at.getTime() <= Date.now()
-  ) {
+  /*
+   * Lối ra sớm để tiết kiệm tiền gọi AI.
+   *
+   * Cổng an toàn cũng chặn trường hợp này, nhưng nếu để chạy tới đó thì đã tốn
+   * một lượt gọi AI cho một tin không bao giờ gửi được. Mốc tính là tin cuối
+   * CỦA KHÁCH, giống hệt cổng an toàn, để hai chỗ không bao giờ lệch nhau.
+   */
+  const sinceCustomer = conversation.last_customer_message_at
+    ? Date.now() - conversation.last_customer_message_at.getTime()
+    : Number.POSITIVE_INFINITY;
+  if (sinceCustomer > 24 * 60 * 60 * 1_000) {
+    console.log(
+      `[AI bán hàng] Bỏ qua ${conversationId}: ngoài cửa sổ 24 giờ, ` +
+        `chỉ nhân viên được trả lời`
+    );
     return false;
   }
 
@@ -140,19 +152,27 @@ export async function handleIncomingMessage(conversationId: string): Promise<boo
 
   // Gửi qua Zernio trước, ghi database sau. Ngược lại thì khi gửi lỗi,
   // lịch sử chat có tin mà khách không hề nhận được.
-  let sent: zernio.ZernioMessage;
-  try {
-    sent = await zernio.sendMessage({
-      conversationId: conversation.id,
-      accountId: conversation.social_account_id,
-      text: decision.reply,
-    });
-  } catch (error) {
-    console.error(
-      `[AI bán hàng] Không gửi được tin cho hội thoại ${conversation.id}:`,
-      error instanceof Error ? error.message : error
-    );
-    await handoff(conversation, "Hệ thống không gửi được tin nhắn, cần người kiểm tra");
+  // Gửi qua cổng an toàn: hàng rào chính sách được áp dụng ở đó.
+  const result = await sendMessageSafely({
+    conversationId: conversation.id,
+    text: decision.reply,
+    actor: "ai",
+  });
+
+  if (!result.sent) {
+    // Bị chặn vì chính sách (ngoài 24 giờ, quá tốc độ, AI đang ngắt) là tình
+    // huống bình thường, không phải lỗi hệ thống — chuyển cho người thật xử lý.
+    const needsHuman =
+      result.blockReason === "ai_outside_24h" ||
+      result.blockReason === "ai_paused" ||
+      result.blockReason === "send_failed";
+
+    if (needsHuman) {
+      await handoff(
+        conversation,
+        result.blockMessage ?? "Hệ thống không gửi được tin nhắn, cần người kiểm tra"
+      );
+    }
     return false;
   }
 
@@ -161,7 +181,7 @@ export async function handleIncomingMessage(conversationId: string): Promise<boo
      VALUES ($1, $2, $3, 'ai', $4)
      ON CONFLICT (conversation_id, external_id) WHERE external_id IS NOT NULL
      DO NOTHING`,
-    [conversation.user_id, conversation.id, sent?.id ?? null, decision.reply]
+    [conversation.user_id, conversation.id, result.externalId, result.text]
   );
 
   // Khách đã đồng ý mua và AI có đủ thông tin thì chuyển cho người chốt đơn,
@@ -350,23 +370,21 @@ async function notifyCustomerOfHandoff(conversation: ConversationRow): Promise<v
       ? (config.settings.handoffNoticeText as string)
       : DEFAULT_HANDOFF_NOTICE;
 
-  try {
-    const sent = await zernio.sendMessage({
-      conversationId: conversation.id,
-      accountId: conversation.social_account_id,
-      text,
-    });
+  const result = await sendMessageSafely({
+    conversationId: conversation.id,
+    text,
+    actor: "ai",
+    // Tin này bắt buộc phải tới được khách, nên không tính vào giới hạn tốc độ.
+    skipRateLimit: true,
+  });
+
+  if (result.sent) {
     await query(
       `INSERT INTO messages (user_id, conversation_id, external_id, sender_type, content)
        VALUES ($1, $2, $3, 'ai', $4)
        ON CONFLICT (conversation_id, external_id) WHERE external_id IS NOT NULL
        DO NOTHING`,
-      [conversation.user_id, conversation.id, sent?.id ?? null, text]
-    );
-  } catch (error) {
-    console.error(
-      `[AI bán hàng] Không gửi được thông báo nhường quyền cho ${conversation.id}:`,
-      error instanceof Error ? error.message : error
+      [conversation.user_id, conversation.id, result.externalId, result.text]
     );
   }
 }

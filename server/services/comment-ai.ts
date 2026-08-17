@@ -1,5 +1,6 @@
 import { query, queryOne } from "../db.js";
 import * as zernio from "./zernio.js";
+import { commentReplyAllowed } from "./guardrails.js";
 
 /**
  * Xử lý bình luận mới: trả lời công khai và nhắn tin riêng cho người bình luận.
@@ -240,6 +241,19 @@ export async function handleCommentReceived(event: CommentEvent): Promise<void> 
       comment.id,
       "Đã nhắn tin riêng cho người này dưới bài đăng này, không nhắn lại theo quy định của Meta"
     );
+    return;
+  }
+
+  /*
+   * CHỐT CHẶN CỬA SỔ 7 NGÀY.
+   * Tài liệu Zernio ghi rõ: trả lời riêng sau bình luận phải gửi trong 7 ngày,
+   * một lần cho mỗi bình luận. Gửi ngoài hạn là vi phạm chính sách.
+   */
+  const windowCheck = commentReplyAllowed(
+    comment.createdAt ? new Date(comment.createdAt) : null
+  );
+  if (!windowCheck.allowed) {
+    await markSkipped(comment.id, windowCheck.message ?? "Ngoài cửa sổ 7 ngày");
     return;
   }
 

@@ -4,6 +4,11 @@ import { requireAuth } from "../auth.js";
 import { AppError, requireString, route } from "../http.js";
 import { sendTelegramMessage } from "../services/telegram.js";
 import * as zernio from "../services/zernio.js";
+import {
+  guardrailStatus,
+  clampConfig,
+  resumeAi,
+} from "../services/guardrails.js";
 
 export const settingsRouter = Router();
 
@@ -394,5 +399,101 @@ settingsRouter.get(
       success: true,
       data: { connected: true, accounts: adAccounts.rows, analytics },
     });
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Hàng rào an toàn theo chính sách nền tảng
+// ---------------------------------------------------------------------------
+
+settingsRouter.get(
+  "/guardrails",
+  route(async (req, res) => {
+    const status = await guardrailStatus(req.user!.id);
+    res.json({ success: true, data: status });
+  })
+);
+
+/**
+ * Điều chỉnh ngưỡng hàng rào.
+ *
+ * Mọi giá trị đều bị kẹp trong khoảng an toàn ở tầng ứng dụng — chủ shop không
+ * thể tự nới lỏng vượt quá giới hạn chính sách, vì hậu quả là mất cả Trang.
+ */
+settingsRouter.put(
+  "/guardrails",
+  route(async (req, res) => {
+    const body = req.body ?? {};
+    const clamped = clampConfig({
+      max_sends_per_minute: body.maxSendsPerMinute,
+      max_ai_sends_per_hour: body.maxAiSendsPerHour,
+      failure_rate_threshold: body.failureRateThreshold,
+      failure_min_samples: body.failureMinSamples,
+      auto_pause_minutes: body.autoPauseMinutes,
+    });
+
+    const updated = await queryOne(
+      `INSERT INTO guardrail_configs
+         (user_id, disclosure_enabled, disclosure_text, max_sends_per_minute,
+          max_ai_sends_per_hour, auto_pause_enabled, failure_rate_threshold,
+          failure_min_samples, auto_pause_minutes)
+       VALUES ($1,$2,$3,
+               COALESCE($4, 20), COALESCE($5, 200), $6,
+               COALESCE($7, 30), COALESCE($8, 10), COALESCE($9, 60))
+       ON CONFLICT (user_id) DO UPDATE SET
+         disclosure_enabled     = EXCLUDED.disclosure_enabled,
+         disclosure_text        = EXCLUDED.disclosure_text,
+         max_sends_per_minute   = COALESCE($4, guardrail_configs.max_sends_per_minute),
+         max_ai_sends_per_hour  = COALESCE($5, guardrail_configs.max_ai_sends_per_hour),
+         auto_pause_enabled     = EXCLUDED.auto_pause_enabled,
+         failure_rate_threshold = COALESCE($7, guardrail_configs.failure_rate_threshold),
+         failure_min_samples    = COALESCE($8, guardrail_configs.failure_min_samples),
+         auto_pause_minutes     = COALESCE($9, guardrail_configs.auto_pause_minutes),
+         updated_at             = now()
+       RETURNING *`,
+      [
+        req.user!.id,
+        body.disclosureEnabled !== false,
+        typeof body.disclosureText === "string" && body.disclosureText.trim()
+          ? body.disclosureText.trim()
+          : 'Em là trợ lý tự động của shop, nếu cần gặp nhân viên anh/chị nhắn "gặp người thật" giúp em nhé.',
+        clamped.max_sends_per_minute ?? null,
+        clamped.max_ai_sends_per_hour ?? null,
+        body.autoPauseEnabled !== false,
+        clamped.failure_rate_threshold ?? null,
+        clamped.failure_min_samples ?? null,
+        clamped.auto_pause_minutes ?? null,
+      ]
+    );
+
+    res.json({ success: true, data: updated });
+  })
+);
+
+/** Mở lại AI cho một kênh đang bị tạm ngắt. */
+settingsRouter.post(
+  "/guardrails/resume/:accountId",
+  route(async (req, res) => {
+    const ok = await resumeAi(req.params.accountId, req.user!.id);
+    if (!ok) throw new AppError("Không tìm thấy kênh này", 404);
+    res.json({ success: true, message: "Đã mở lại AI cho kênh này" });
+  })
+);
+
+/** Nhật ký các lần bị hàng rào chặn, để chủ shop hiểu hệ thống đã ngăn gì. */
+settingsRouter.get(
+  "/guardrails/blocked",
+  route(async (req, res) => {
+    const rows = await query(
+      `SELECT s.actor, s.block_reason, s.created_at, s.conversation_id,
+              c.name AS customer_name
+         FROM send_attempts s
+         LEFT JOIN conversations cv ON cv.id = s.conversation_id
+         LEFT JOIN customers c ON c.id = cv.customer_id
+        WHERE s.user_id = $1 AND s.decision = 'blocked'
+        ORDER BY s.created_at DESC LIMIT 100`,
+      [req.user!.id]
+    );
+    res.json({ success: true, data: rows.rows });
   })
 );

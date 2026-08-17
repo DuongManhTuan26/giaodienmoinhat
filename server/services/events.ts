@@ -1,6 +1,7 @@
 import { query, queryOne, transaction } from "../db.js";
 import { handleIncomingMessage } from "./sales-ai.js";
 import { handleCommentReceived } from "./comment-ai.js";
+import { touchCustomerMessage } from "./outbound.js";
 
 /**
  * Chuyển sự kiện webhook thành dữ liệu nghiệp vụ.
@@ -227,6 +228,9 @@ async function handleMessageReceived(event: WebhookEvent): Promise<void> {
       ]
     );
   });
+
+  // Mốc tính cửa sổ 24 giờ và 7 ngày. Chỉ cập nhật khi KHÁCH gửi tin.
+  await touchCustomerMessage(message.conversationId, now);
 
   console.log(
     `[sự kiện] Tin nhắn mới trong hội thoại ${message.conversationId} ` +

@@ -3,6 +3,7 @@ import { query, queryOne, transaction } from "../db.js";
 import { requireAuth } from "../auth.js";
 import { AppError, requireString, route } from "../http.js";
 import * as zernio from "../services/zernio.js";
+import { sendMessageSafely } from "../services/outbound.js";
 
 export const inboxRouter = Router();
 
@@ -169,18 +170,14 @@ inboxRouter.post(
       throw new AppError("Hội thoại này không còn gắn với tài khoản nào", 409);
     }
 
-    if (windowState(conversation.window_expires_at) === "expired") {
-      throw new AppError(
-        "Đã quá 24 giờ kể từ tin nhắn cuối của khách nên nền tảng không cho gửi tin nữa. " +
-          "Hãy chờ khách nhắn lại.",
-        409
-      );
-    }
-
-    const sent = await zernio.sendMessage({
+    // Không kiểm tra cửa sổ ở đây nữa: cổng an toàn xét đủ cả 24 giờ, 7 ngày,
+    // giới hạn tốc độ và trạng thái ngắt AI, rồi tự gắn thẻ HUMAN_AGENT khi
+    // nhân viên trả lời ngoài cửa sổ 24 giờ.
+    const result = await sendMessageSafely({
       conversationId: conversation.id,
-      accountId: conversation.social_account_id,
       text,
+      actor: "human",
+      throwOnBlock: true,
     });
 
     const saved = await transaction(async (client) => {
@@ -190,7 +187,7 @@ inboxRouter.post(
          ON CONFLICT (conversation_id, external_id) WHERE external_id IS NOT NULL
          DO NOTHING
          RETURNING id, sender_type, content, sent_at`,
-        [req.user!.id, conversation.id, sent?.id ?? null, text]
+        [req.user!.id, conversation.id, result.externalId, result.text]
       );
 
       // Nhân viên nhắn tay nghĩa là đã tiếp quản — AI ngừng tự trả lời.

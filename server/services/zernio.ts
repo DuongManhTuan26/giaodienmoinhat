@@ -304,16 +304,38 @@ export async function getConversation(
  * Phản hồi HTTP nghĩa là ĐÃ NHẬN, chưa phải ĐÃ GỬI TỚI KHÁCH. Trạng thái thật
  * đến sau qua webhook message.sent hoặc message.failed.
  */
+/**
+ * Thẻ tin nhắn cho phép gửi ngoài cửa sổ 24 giờ.
+ * Danh sách này do Zernio trả về khi gửi thẻ sai, nên là danh sách thật.
+ * Instagram chỉ nhận HUMAN_AGENT.
+ */
+export type MessageTag =
+  | "CONFIRMED_EVENT_UPDATE"
+  | "POST_PURCHASE_UPDATE"
+  | "ACCOUNT_UPDATE"
+  | "HUMAN_AGENT";
+
 export async function sendMessage(params: {
   conversationId: string;
   accountId: string;
   text: string;
+  /**
+   * Gắn thẻ khi gửi ngoài cửa sổ 24 giờ. Không có thẻ mà gửi ngoài cửa sổ thì
+   * nền tảng từ chối, và gắn thẻ sai ngữ cảnh là vi phạm chính sách.
+   */
+  messageTag?: MessageTag;
 }): Promise<ZernioMessage> {
   return request<ZernioMessage>(
     `/inbox/conversations/${encodeURIComponent(params.conversationId)}/messages`,
     {
       method: "POST",
-      body: { accountId: params.accountId, message: params.text },
+      body: {
+        accountId: params.accountId,
+        message: params.text,
+        ...(params.messageTag
+          ? { messagingType: "MESSAGE_TAG", messageTag: params.messageTag }
+          : {}),
+      },
       // Không thử lại khi gửi tin: lần thử thứ hai có thể khiến khách nhận hai tin.
       retries: 0,
     }
