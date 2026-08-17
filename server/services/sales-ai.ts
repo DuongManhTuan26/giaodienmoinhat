@@ -307,6 +307,70 @@ async function saveExtracted(
   );
 }
 
+/**
+ * Câu nói với khách khi AI chuyển việc cho nhân viên.
+ *
+ * Không có câu này thì AI im bặt: quan sát trên dữ liệu thật ngày 17/08/2026,
+ * khách hỏi ngoài phạm vi kiến thức, AI nhường quyền đúng, nhưng khách gửi
+ * thêm hai tin ("Sao b ko trả lời", "Hú") và không nhận được gì. Từ phía khách,
+ * shop trông như đã bỏ mặc họ.
+ */
+const DEFAULT_HANDOFF_NOTICE =
+  "Dạ phần này em xin phép chuyển cho bạn phụ trách trả lời chính xác hơn ạ. " +
+  "Anh/chị chờ em ít phút nhé!";
+
+/**
+ * Nhắn cho khách biết đang chuyển cho người thật.
+ *
+ * Chỉ gửi một lần cho mỗi lượt nhường quyền, và chỉ khi cửa sổ 24 giờ còn hạn.
+ * Lỗi gửi không được làm hỏng việc nhường quyền — việc đó đã xong và quan trọng
+ * hơn nhiều.
+ */
+async function notifyCustomerOfHandoff(conversation: ConversationRow): Promise<void> {
+  if (!conversation.social_account_id) return;
+  if (
+    conversation.window_expires_at &&
+    conversation.window_expires_at.getTime() <= Date.now()
+  ) {
+    return;
+  }
+
+  const config = await queryOne<{ settings: Record<string, unknown> }>(
+    "SELECT settings FROM ai_configs WHERE user_id = $1 AND kind = 'sales'",
+    [conversation.user_id]
+  );
+
+  // Chủ shop tắt được nếu muốn tự nhắn, nhưng mặc định là bật vì im lặng
+  // đồng nghĩa với mất khách.
+  if (config?.settings?.handoffNotice === false) return;
+
+  const text =
+    typeof config?.settings?.handoffNoticeText === "string" &&
+    config.settings.handoffNoticeText.trim() !== ""
+      ? (config.settings.handoffNoticeText as string)
+      : DEFAULT_HANDOFF_NOTICE;
+
+  try {
+    const sent = await zernio.sendMessage({
+      conversationId: conversation.id,
+      accountId: conversation.social_account_id,
+      text,
+    });
+    await query(
+      `INSERT INTO messages (user_id, conversation_id, external_id, sender_type, content)
+       VALUES ($1, $2, $3, 'ai', $4)
+       ON CONFLICT (conversation_id, external_id) WHERE external_id IS NOT NULL
+       DO NOTHING`,
+      [conversation.user_id, conversation.id, sent?.id ?? null, text]
+    );
+  } catch (error) {
+    console.error(
+      `[AI bán hàng] Không gửi được thông báo nhường quyền cho ${conversation.id}:`,
+      error instanceof Error ? error.message : error
+    );
+  }
+}
+
 async function handoff(conversation: ConversationRow, reason: string): Promise<void> {
   await transaction(async (client) => {
     await client.query(
@@ -329,6 +393,10 @@ async function handoff(conversation: ConversationRow, reason: string): Promise<v
     [conversation.customer_id]
   );
 
+  // Nói với khách trước, vì khách là người đang chờ.
+  await notifyCustomerOfHandoff(conversation);
+
+  // Rồi báo cho chủ shop qua Telegram.
   await sendHandoffAlert(conversation.user_id, {
     customerName: customer?.name || "Khách chưa có tên",
     reason,

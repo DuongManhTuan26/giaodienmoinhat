@@ -1,5 +1,6 @@
 import { query, queryOne, transaction } from "../db.js";
 import { handleIncomingMessage } from "./sales-ai.js";
+import { handleCommentReceived } from "./comment-ai.js";
 
 /**
  * Chuyển sự kiện webhook thành dữ liệu nghiệp vụ.
@@ -27,6 +28,9 @@ export async function handleWebhookEvent(event: WebhookEvent): Promise<void> {
       break;
     case "message.sent":
       await handleMessageSent(event);
+      break;
+    case "comment.received":
+      await handleCommentReceived({ accountId: event.accountId, payload: event.payload });
       break;
     case "account.connected":
     case "account.disconnected":
@@ -250,7 +254,19 @@ async function handleMessageReceived(event: WebhookEvent): Promise<void> {
   }
 }
 
-/** Tin do shop gửi đi (kể cả gửi từ ứng dụng khác) — ghi lại để lịch sử đầy đủ. */
+/**
+ * Tin do shop gửi đi — cả tin AI vừa gửi, tin nhân viên gửi từ ứng dụng khác,
+ * và tin trả lời tự động do chính Facebook đặt trong cài đặt Trang.
+ *
+ * Điểm quan trọng: khi AI gửi tin, hệ thống đã ghi một dòng sender_type='ai'
+ * NGAY LÚC GỬI, nhưng lúc đó chưa biết id tin nhắn phía nền tảng. Vài giây sau
+ * webhook message.sent mang id thật về. Nếu chèn thẳng thành 'human' thì mỗi
+ * câu AI nói bị lưu hai lần — một lần 'ai', một lần 'human'.
+ *
+ * Hậu quả đã quan sát được trên dữ liệu thật ngày 17/08/2026: lịch sử chat hiện
+ * đôi mọi câu AI, chỉ số "AI đã phản hồi" đếm thiếu, và số tin do người gửi bị
+ * thổi phồng. Nên ở đây phải khớp lại dòng đã có thay vì chèn dòng mới.
+ */
 async function handleMessageSent(event: WebhookEvent): Promise<void> {
   const message = event.payload.message as MessagePayload | undefined;
   if (!message?.conversationId || !message.id) return;
@@ -261,18 +277,41 @@ async function handleMessageSent(event: WebhookEvent): Promise<void> {
   );
   if (!conversation) return;
 
+  const externalId = message.platformMessageId ?? message.id;
+  const text = typeof message.text === "string" ? message.text : "";
+
+  // Tìm dòng hệ thống vừa ghi cho chính tin này: cùng hội thoại, cùng nội dung,
+  // do phía shop gửi, chưa có id nền tảng, và trong vòng 5 phút.
+  const existing = await queryOne<{ id: number }>(
+    `SELECT id FROM messages
+      WHERE conversation_id = $1
+        AND sender_type IN ('ai', 'human')
+        AND external_id IS NULL
+        AND content = $2
+        AND sent_at > now() - interval '5 minutes'
+      ORDER BY sent_at DESC LIMIT 1`,
+    [message.conversationId, text]
+  );
+
+  if (existing) {
+    // Bổ sung id nền tảng vào đúng dòng đã có, giữ nguyên sender_type.
+    // Từ giờ dòng này có id nên webhook giao lặp sẽ bị khoá duy nhất chặn lại.
+    await query("UPDATE messages SET external_id = $2 WHERE id = $1", [
+      existing.id,
+      externalId,
+    ]);
+    return;
+  }
+
+  // Không khớp dòng nào: đây là tin gửi từ nơi khác — nhân viên trả lời trực
+  // tiếp trên Facebook, hoặc tin trả lời tự động của Trang. Ghi là 'human'.
   await query(
     `INSERT INTO messages
        (user_id, conversation_id, external_id, sender_type, content, sent_at)
      VALUES ($1, $2, $3, 'human', $4, now())
      ON CONFLICT (conversation_id, external_id) WHERE external_id IS NOT NULL
      DO NOTHING`,
-    [
-      conversation.user_id,
-      message.conversationId,
-      message.platformMessageId ?? message.id,
-      typeof message.text === "string" ? message.text : "",
-    ]
+    [conversation.user_id, message.conversationId, externalId, text]
   );
 }
 
