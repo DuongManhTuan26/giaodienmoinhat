@@ -1,18 +1,182 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { clsx } from 'clsx';
-import { mockTelegramHistory } from '../data/mockApi';
+import { api, ApiError, timeAgo } from '../lib/api';
+
+/** Khoá sự kiện trong database <-> nhãn hiển thị. */
+const EVENT_KEYS = {
+  new_order: 'Đơn hàng mới',
+  handoff: 'Khách cần người hỗ trợ',
+  near_24h: 'Sắp hết 24 giờ',
+  daily_summary: 'Tổng kết ngày',
+  weekly_summary: 'Tổng kết tuần',
+  post_published: 'Bài đã đăng',
+  new_comment: 'Bình luận mới',
+  ads_budget: 'Cảnh báo ngân sách quảng cáo',
+} as const;
+
+interface LogRow {
+  id: number;
+  kind: string;
+  content: string;
+  status: string;
+  error: string | null;
+  created_at: string;
+}
 
 export default function TelegramAlerts() {
-  const [isConnected, setIsConnected] = useState(true);
-  
-  // States
-  const [warnNear24h, setWarnNear24h] = useState(true);
-  const [dailySummary, setDailySummary] = useState(true);
+  const [isConnected, setIsConnected] = useState(false);
+  const [hasToken, setHasToken] = useState(false);
+  const [chatId, setChatId] = useState('');
+  const [botTokenInput, setBotTokenInput] = useState('');
+  const [verifiedAt, setVerifiedAt] = useState<string | null>(null);
+  const [logs, setLogs] = useState<LogRow[]>([]);
+  const [events, setEvents] = useState<Record<string, boolean>>({});
   const [dailySummaryTime, setDailySummaryTime] = useState('20:00');
-  const [weeklySummary, setWeeklySummary] = useState(false);
-  const [postPublished, setPostPublished] = useState(false);
-  const [newComment, setNewComment] = useState(false);
-  const [adsBudgetWarn, setAdsBudgetWarn] = useState(true);
+
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [notice, setNotice] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.settings.telegram();
+      setHasToken(data.hasToken);
+      setChatId(data.chatId);
+      setIsConnected(data.enabled && data.hasToken && Boolean(data.chatId));
+      setVerifiedAt(data.verifiedAt);
+      setLogs(data.logs);
+      setEvents(data.events ?? {});
+      if (typeof data.events?.dailySummaryTime === 'string') {
+        setDailySummaryTime(data.events.dailySummaryTime as unknown as string);
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không tải được cấu hình Telegram');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  /** Bật/tắt một loại thông báo và lưu ngay. */
+  const setEvent = async (key: string, value: boolean) => {
+    const next = { ...events, [key]: value };
+    setEvents(next);
+    try {
+      await api.settings.saveTelegram({ enabled: isConnected, events: next });
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không lưu được cài đặt');
+      await load();
+    }
+  };
+
+  const eventOn = (key: string) => events[key] !== false;
+
+  /** Lưu Bot Token và Chat ID rồi gửi tin thử để xác nhận. */
+  const handleConnect = async () => {
+    if (!botTokenInput.trim() && !hasToken) {
+      setErrorMessage('Hãy dán Bot Token lấy từ @BotFather.');
+      return;
+    }
+    if (!chatId.trim()) {
+      setErrorMessage('Hãy nhập Chat ID. Nhắn /start cho bot rồi lấy Chat ID từ @userinfobot.');
+      return;
+    }
+
+    setBusy(true);
+    setErrorMessage('');
+    setNotice('');
+    try {
+      await api.settings.saveTelegram({
+        botToken: botTokenInput.trim() || undefined,
+        chatId: chatId.trim(),
+        enabled: true,
+        events,
+      });
+      await api.settings.testTelegram();
+      setBotTokenInput('');
+      setNotice('Đã gửi tin nhắn thử. Kiểm tra Telegram của bạn.');
+      await load();
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không kết nối được Telegram');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSendTest = async () => {
+    setBusy(true);
+    setErrorMessage('');
+    setNotice('');
+    try {
+      await api.settings.testTelegram();
+      setNotice('Đã gửi tin nhắn thử. Kiểm tra Telegram của bạn.');
+      await load();
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không gửi được tin thử');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * Ngắt kết nối: chỉ tắt gửi thông báo, giữ nguyên Bot Token đã lưu để
+   * bật lại không phải lấy token mới từ BotFather.
+   */
+  const handleDisconnect = async () => {
+    if (!confirm('Ngắt kết nối Telegram? Hệ thống sẽ ngừng gửi thông báo.')) return;
+    setBusy(true);
+    try {
+      await api.settings.saveTelegram({ enabled: false, events });
+      await load();
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không ngắt kết nối được');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleResend = async () => {
+    // Gửi lại là gửi một tin kiểm tra mới; tin cũ đã thất bại không lưu
+    // nguyên văn nội dung động nên không tái tạo được y hệt.
+    await handleSendTest();
+  };
+
+  /** Lịch sử gửi, chuyển sang hình dạng bảng đang vẽ. */
+  const KIND_LABELS: Record<string, string> = {
+    new_order: 'Đơn hàng',
+    handoff: 'Cần xử lý',
+    daily_summary: 'Tổng kết',
+    test: 'Kiểm tra',
+    general: 'Thông báo',
+  };
+
+  const displayLogs = logs.map((log) => ({
+    id: log.id,
+    time: new Date(log.created_at).toLocaleString('vi-VN', {
+      day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+    }),
+    type: KIND_LABELS[log.kind] ?? 'Thông báo',
+    content: log.content,
+    status: log.status === 'sent' ? 'Đã gửi' : 'Gửi lỗi',
+    error: log.error,
+  }));
+
+  // Trạng thái từng loại thông báo, dùng cho các công tắc trên giao diện
+  const warnNear24h = eventOn('near_24h');
+  const setWarnNear24h = (v: boolean) => setEvent('near_24h', v);
+  const dailySummary = eventOn('daily_summary');
+  const setDailySummary = (v: boolean) => setEvent('daily_summary', v);
+  const weeklySummary = events.weekly_summary === true;
+  const setWeeklySummary = (v: boolean) => setEvent('weekly_summary', v);
+  const postPublished = events.post_published === true;
+  const setPostPublished = (v: boolean) => setEvent('post_published', v);
+  const newComment = events.new_comment === true;
+  const setNewComment = (v: boolean) => setEvent('new_comment', v);
+  const adsBudgetWarn = eventOn('ads_budget');
+  const setAdsBudgetWarn = (v: boolean) => setEvent('ads_budget', v);
 
   return (
     <main className="flex-1   p-8 bg-background space-y-8  ">
@@ -21,14 +185,26 @@ export default function TelegramAlerts() {
       <div>
         <div className="flex items-center gap-3 mb-1">
           <h1 className="text-3xl font-black text-on-surface tracking-tight">Cảnh báo Telegram</h1>
-          <span className="font-mono text-[10px] font-bold tracking-wider text-primary bg-primary/10 border border-primary/30 px-2 py-0.5 rounded uppercase">ĐÃ KẾT NỐI</span>
+          <span className={clsx(
+            "font-mono text-[10px] font-bold tracking-wider px-2 py-0.5 rounded uppercase border",
+            isConnected
+              ? "text-primary bg-primary/10 border-primary/30"
+              : "text-on-surface-variant bg-surface-variant border-outline-variant"
+          )}>{isConnected ? 'ĐÃ KẾT NỐI' : 'CHƯA KẾT NỐI'}</span>
         </div>
         <p className="text-on-surface-variant text-sm">Nhận thông báo đơn hàng và cảnh báo ngay trên điện thoại</p>
       </div>
 
+      {errorMessage && (
+        <div className="text-sm text-error bg-error/10 border border-error/30 rounded-xl px-4 py-3">{errorMessage}</div>
+      )}
+      {notice && (
+        <div className="text-sm text-green-400 bg-green-400/10 border border-green-400/30 rounded-xl px-4 py-3">{notice}</div>
+      )}
+
       {/* HÀNG 1: THẺ TRẠNG THÁI KẾT NỐI */}
       <div className="space-y-4">
-        {/* Bản đã kết nối */}
+        {isConnected && (
         <div className="bg-surface-container/30 border border-primary/50 shadow-[0_0_20px_rgba(0,229,255,0.1)] rounded-2xl p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-6 relative overflow-hidden">
           <div className="absolute top-0 right-0 w-64 h-64 bg-primary/5 blur-[80px] -z-10 rounded-full"></div>
           
@@ -41,23 +217,25 @@ export default function TelegramAlerts() {
                 <h2 className="text-xl font-bold text-on-surface">Đã kết nối</h2>
                 <div className="w-2.5 h-2.5 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"></div>
               </div>
-              <p className="text-on-surface-variant font-medium mb-0.5">Tài khoản: <span className="text-on-surface font-bold">@tuan_hoang</span></p>
-              <p className="text-xs text-on-surface-variant/70">Kết nối từ ngày 10/08/2026</p>
+              <p className="text-on-surface-variant font-medium mb-0.5">Chat ID: <span className="text-on-surface font-bold">{chatId || '(chưa có)'}</span></p>
+              <p className="text-xs text-on-surface-variant/70">{verifiedAt ? `Đã xác nhận ${new Date(verifiedAt).toLocaleDateString('vi-VN')}` : 'Chưa gửi tin thử để xác nhận'}</p>
             </div>
           </div>
 
           <div className="flex gap-3 w-full md:w-auto">
-            <button className="flex-1 md:flex-none px-5 py-2.5 bg-surface-container border border-outline-variant text-on-surface font-bold rounded-xl hover:bg-surface-variant transition-colors">
+            <button className="flex-1 md:flex-none px-5 py-2.5 bg-surface-container border border-outline-variant text-on-surface font-bold rounded-xl hover:bg-surface-variant transition-colors" onClick={handleSendTest} disabled={busy}>
               Gửi tin thử
             </button>
-            <button className="flex-1 md:flex-none px-5 py-2.5 bg-surface-container border border-error/50 text-error font-bold rounded-xl hover:bg-error/10 hover:border-error transition-colors">
+            <button className="flex-1 md:flex-none px-5 py-2.5 bg-surface-container border border-error/50 text-error font-bold rounded-xl hover:bg-error/10 hover:border-error transition-colors" onClick={handleDisconnect} disabled={busy}>
               Ngắt kết nối
             </button>
           </div>
         </div>
 
-        {/* Bản chưa kết nối (để xem giao diện) */}
-        <div className="bg-surface-container/30 border border-outline-variant rounded-2xl p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+        )}
+
+        {!isConnected && (
+        <div className="bg-surface-container/30 border border-outline-variant rounded-2xl p-6 flex flex-col gap-5">
           <div className="flex items-center gap-5 flex-1">
             <div className="w-16 h-16 bg-surface-variant rounded-full flex items-center justify-center shrink-0">
               <span className="material-symbols-outlined text-on-surface-variant text-[32px]">send</span>
@@ -66,19 +244,43 @@ export default function TelegramAlerts() {
               <h2 className="text-xl font-bold text-on-surface mb-1">Chưa kết nối</h2>
               <p className="text-on-surface-variant text-sm mb-4">Kết nối Telegram để nhận thông báo đơn hàng ngay lập tức</p>
               
-              <div className="flex items-center gap-6 text-sm font-medium text-on-surface-variant">
-                <span className="flex items-center gap-2"><span className="w-5 h-5 rounded-full bg-surface-variant flex items-center justify-center text-xs font-bold text-on-surface">1</span> Bấm nút Kết nối để mở Telegram</span>
-                <span className="flex items-center gap-2"><span className="w-5 h-5 rounded-full bg-surface-variant flex items-center justify-center text-xs font-bold text-on-surface">2</span> Bấm nút Bắt đầu trong Telegram</span>
-                <span className="flex items-center gap-2"><span className="w-5 h-5 rounded-full bg-surface-variant flex items-center justify-center text-xs font-bold text-on-surface">3</span> Quay lại đây, hệ thống tự nhận</span>
+              <div className="flex flex-col sm:flex-row sm:items-center gap-x-6 gap-y-2 text-sm font-medium text-on-surface-variant">
+                <span className="flex items-center gap-2"><span className="w-5 h-5 rounded-full bg-surface-variant flex items-center justify-center text-xs font-bold text-on-surface shrink-0">1</span> Nhắn <b className="text-on-surface">/newbot</b> cho <b className="text-on-surface">@BotFather</b> để lấy Bot Token</span>
+                <span className="flex items-center gap-2"><span className="w-5 h-5 rounded-full bg-surface-variant flex items-center justify-center text-xs font-bold text-on-surface shrink-0">2</span> Nhắn <b className="text-on-surface">/start</b> cho bot vừa tạo</span>
+                <span className="flex items-center gap-2"><span className="w-5 h-5 rounded-full bg-surface-variant flex items-center justify-center text-xs font-bold text-on-surface shrink-0">3</span> Lấy Chat ID từ <b className="text-on-surface">@userinfobot</b></span>
               </div>
             </div>
           </div>
 
-          <button className="w-full md:w-auto px-8 py-3 bg-[#2AABEE] text-white font-bold rounded-xl shadow-[0_4px_15px_rgba(42,171,238,0.4)] hover:scale-105 transition-transform flex items-center justify-center gap-2 shrink-0">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider">Bot Token</label>
+              <input
+                type="password"
+                value={botTokenInput}
+                onChange={(e) => setBotTokenInput(e.target.value)}
+                placeholder={hasToken ? '••••••  (đã lưu, để trống nếu không đổi)' : '123456789:ABCdef...'}
+                className="w-full bg-surface-container border border-outline-variant/50 rounded-lg px-3 py-2.5 text-sm text-on-surface focus:border-primary focus:ring-1 focus:ring-primary focus:outline-none transition-all font-mono"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider">Chat ID</label>
+              <input
+                type="text"
+                value={chatId}
+                onChange={(e) => setChatId(e.target.value)}
+                placeholder="Ví dụ: 123456789 hoặc -1001234567890"
+                className="w-full bg-surface-container border border-outline-variant/50 rounded-lg px-3 py-2.5 text-sm text-on-surface focus:border-primary focus:ring-1 focus:ring-primary focus:outline-none transition-all font-mono"
+              />
+            </div>
+          </div>
+
+          <button className="w-full md:w-auto md:self-start px-8 py-3 bg-[#2AABEE] text-white font-bold rounded-xl shadow-[0_4px_15px_rgba(42,171,238,0.4)] hover:scale-105 transition-transform flex items-center justify-center gap-2 shrink-0 disabled:opacity-60 disabled:hover:scale-100" onClick={handleConnect} disabled={busy}>
             <span className="material-symbols-outlined text-[20px]">link</span>
-            Kết nối Telegram
+            {busy ? 'Đang kết nối…' : 'Kết nối và gửi tin thử'}
           </button>
         </div>
+        )}
       </div>
 
       {/* HÀNG 2: HAI NHÓM THÔNG BÁO */}
@@ -265,7 +467,7 @@ export default function TelegramAlerts() {
               </tr>
             </thead>
             <tbody className="divide-y divide-outline-variant/30">
-              {mockTelegramHistory.map((item) => (
+              {displayLogs.map((item) => (
                 <tr key={item.id} className="hover:bg-surface-container/50 transition-colors group">
                   <td className="p-4 text-sm text-on-surface-variant font-medium whitespace-nowrap">{item.time}</td>
                   <td className="p-4">
@@ -292,7 +494,7 @@ export default function TelegramAlerts() {
                         <span className="text-sm font-bold text-error flex items-center gap-1.5">
                           <span className="material-symbols-outlined text-[14px]">error</span> Gửi lỗi
                         </span>
-                        <button className="text-xs font-bold text-primary hover:underline bg-primary/10 px-2 py-0.5 rounded border border-primary/20">
+                        <button onClick={handleResend} disabled={busy} className="text-xs font-bold text-primary hover:underline bg-primary/10 px-2 py-0.5 rounded border border-primary/20 disabled:opacity-50" title={item.error ?? undefined}>
                           Gửi lại
                         </button>
                       </div>
