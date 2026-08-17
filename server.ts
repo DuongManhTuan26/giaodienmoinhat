@@ -3,6 +3,7 @@ import { env } from "./server/env.js";
 import { verifyConnection, closePool } from "./server/db.js";
 import { runMigrations } from "./server/migrate.js";
 import { pruneExpiredSessions } from "./server/auth.js";
+import { startWorker, stopWorker, recoverStuckEvents } from "./server/worker.js";
 
 /**
  * Điểm khởi động của hệ thống.
@@ -19,11 +20,16 @@ async function main() {
   console.log("[khởi động] Đang áp dụng migration…");
   await runMigrations();
 
+  // Sự kiện kẹt ở 'processing' do lần chạy trước bị giết giữa chừng.
+  await recoverStuckEvents();
+
   const app = await createApp();
 
   const server = app.listen(env.port, "0.0.0.0", () => {
     console.log(`[khởi động] Sẵn sàng tại http://localhost:${env.port}`);
   });
+
+  startWorker();
 
   // Dọn phiên hết hạn mỗi giờ. unref() để tác vụ này không giữ tiến trình sống.
   const sessionCleanup = setInterval(
@@ -40,6 +46,7 @@ async function main() {
   for (const signal of ["SIGTERM", "SIGINT"] as const) {
     process.on(signal, () => {
       console.log(`\n[tắt] Nhận ${signal}, đang đóng…`);
+      stopWorker();
       server.close(() => {
         closePool()
           .catch(() => {})

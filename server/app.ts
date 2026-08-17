@@ -6,6 +6,7 @@ import { attachUser } from "./auth.js";
 import { errorHandler } from "./http.js";
 import { authRouter } from "./routes/auth.js";
 import { connectionsRouter } from "./routes/connections.js";
+import { webhooksRouter } from "./routes/webhooks.js";
 
 export async function createApp() {
   const app = express();
@@ -23,6 +24,9 @@ export async function createApp() {
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok", env: env.nodeEnv, time: new Date().toISOString() });
   });
+
+  // Webhook không dùng cookie phiên — xác thực bằng chữ ký HMAC.
+  app.use("/api/webhooks", webhooksRouter);
 
   app.use("/api/auth", authRouter);
   app.use("/api/connections", connectionsRouter);

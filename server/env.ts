@@ -41,9 +41,8 @@ export const env = {
     webhookSecret: optional("ZERNIO_WEBHOOK_SECRET"),
   },
 
-  gemini: {
-    apiKey: optional("GEMINI_API_KEY"),
-    model: optional("GEMINI_MODEL", "gemini-3.7-flash"),
+  openrouter: {
+    apiKey: optional("OPENROUTER_API_KEY"),
   },
 
   sessionSecret: required("SESSION_SECRET"),
@@ -52,8 +51,10 @@ export const env = {
 /** Những tính năng chưa dùng được vì thiếu cấu hình — hiện cảnh báo lúc khởi động. */
 export function missingOptionalConfig(): string[] {
   const missing: string[] = [];
-  if (!env.gemini.apiKey) {
-    missing.push("GEMINI_API_KEY — các tính năng AI sẽ trả lỗi cho tới khi được điền");
+  if (!env.openrouter.apiKey) {
+    missing.push(
+      "OPENROUTER_API_KEY — các tính năng AI sẽ trả lỗi cho tới khi được điền"
+    );
   }
   if (!env.zernio.webhookSecret) {
     missing.push(
