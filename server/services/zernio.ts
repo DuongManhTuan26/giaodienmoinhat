@@ -29,12 +29,14 @@ interface RequestOptions {
   method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
   query?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
+  /** Header bổ sung, ví dụ x-request-id để chống đăng trùng. */
+  headers?: Record<string, string>;
   /** Số lần thử lại khi gặp lỗi tạm thời. */
   retries?: number;
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = "GET", query, body, retries = 2 } = options;
+  const { method = "GET", query, body, headers = {}, retries = 2 } = options;
 
   const url = new URL(env.zernio.baseUrl + path);
   for (const [key, value] of Object.entries(query ?? {})) {
@@ -53,6 +55,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
         headers: {
           Authorization: `Bearer ${env.zernio.apiKey}`,
           "Content-Type": "application/json",
+          ...headers,
         },
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: AbortSignal.timeout(20_000),
@@ -375,18 +378,53 @@ export async function privateReplyToComment(params: {
 // Đăng bài
 // ---------------------------------------------------------------------------
 
+export interface PostTarget {
+  /** Định danh nền tảng, ví dụ "facebook". */
+  platform: string;
+  /** _id của tài khoản đã kết nối trên nền tảng đó. */
+  accountId: string;
+}
+
+/**
+ * Tạo và đăng bài.
+ *
+ * Zernio nhận mảng `platforms` gồm các cặp { platform, accountId }, không phải
+ * mảng accountId phẳng — gửi sai sẽ nhận "Missing required field: platforms".
+ *
+ * `x-request-id` là khoá chống đăng trùng: gửi lại cùng một UUID trong khoảng
+ * 5 phút thì Zernio trả về bài cũ thay vì đăng thêm một bài nữa lên Fanpage.
+ */
 export async function createPost(params: {
-  accountIds: string[];
+  targets: PostTarget[];
   content: string;
   mediaUrls?: string[];
   scheduledFor?: Date | null;
-}): Promise<{ _id?: string; id?: string; status?: string; [key: string]: unknown }> {
+  /** Múi giờ dùng để hiểu thời gian hẹn. Mặc định giờ Việt Nam. */
+  timezone?: string;
+  idempotencyKey?: string;
+}): Promise<{
+  _id?: string;
+  id?: string;
+  status?: string;
+  post?: Record<string, unknown>;
+  existingPost?: Record<string, unknown>;
+  [key: string]: unknown;
+}> {
   return request("/posts", {
     method: "POST",
+    headers: {
+      "x-request-id": params.idempotencyKey ?? crypto.randomUUID(),
+    },
     body: {
-      accountIds: params.accountIds,
       content: params.content,
+      platforms: params.targets.map((target) => ({
+        platform: target.platform,
+        accountId: target.accountId,
+      })),
+      timezone: params.timezone ?? "Asia/Ho_Chi_Minh",
       ...(params.mediaUrls?.length ? { mediaUrls: params.mediaUrls } : {}),
+      // Thiếu publishNow thì Zernio chỉ lưu bài ở trạng thái draft và không
+      // bao giờ đẩy lên nền tảng — bài nằm im mà giao diện tưởng đã đăng.
       ...(params.scheduledFor
         ? { scheduledFor: params.scheduledFor.toISOString() }
         : { publishNow: true }),

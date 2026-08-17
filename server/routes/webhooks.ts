@@ -20,6 +20,7 @@ const HANDLED_EVENTS = new Set([
   "conversation.started",
   "comment.received",
   "post.published",
+  "post.partial",
   "post.failed",
   "account.connected",
   "account.disconnected",

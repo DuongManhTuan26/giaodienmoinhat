@@ -120,7 +120,26 @@ postsRouter.patch(
       if (scheduled && Number.isNaN(scheduled.getTime())) {
         throw new AppError("Thời gian hẹn đăng không hợp lệ");
       }
+      // Cùng một điều kiện với lúc tạo mới. Thiếu chỗ này thì bài hẹn về quá
+      // khứ vẫn được lưu, và tiến trình đăng theo lịch sẽ bắn nó ra ngay lập
+      // tức trong khi người dùng tưởng đã đặt lịch tương lai.
+      if (scheduled && scheduled.getTime() <= Date.now()) {
+        throw new AppError("Thời gian hẹn đăng phải ở tương lai");
+      }
       assign("scheduled_for", scheduled);
+    }
+
+    // Đưa bài sang trạng thái hẹn giờ thì buộc phải có thời gian hẹn,
+    // nếu không bài sẽ nằm im mãi mà không ai biết vì sao.
+    if (body.status === "scheduled" && body.scheduledFor === undefined) {
+      const current = await queryOne<{ scheduled_for: Date | null }>(
+        "SELECT scheduled_for FROM posts WHERE id = $1 AND user_id = $2",
+        [req.params.id, req.user!.id]
+      );
+      if (!current) throw new AppError("Không tìm thấy bài viết", 404);
+      if (!current.scheduled_for || current.scheduled_for.getTime() <= Date.now()) {
+        throw new AppError("Hãy chọn thời gian đăng ở tương lai cho bài hẹn giờ");
+      }
     }
 
     if (fields.length === 0) throw new AppError("Không có thông tin nào để cập nhật");
@@ -163,19 +182,23 @@ postsRouter.post(
       throw new AppError("Bài đang được đăng, vui lòng đợi", 409);
     }
 
-    const accountIds = post.target_account_ids?.length
-      ? post.target_account_ids
-      : (
-          await query<{ id: string }>(
-            `SELECT id FROM social_accounts
-              WHERE user_id = $1 AND connected = TRUE AND platform <> 'metaads'`,
-            [req.user!.id]
-          )
-        ).rows.map((row) => row.id);
+    // Zernio cần cả platform và accountId cho từng kênh, nên phải tra lại
+    // từ database chứ không thể gửi danh sách id phẳng.
+    const targets = await query<{ id: string; platform: string }>(
+      post.target_account_ids?.length
+        ? `SELECT id, platform FROM social_accounts
+             WHERE user_id = $1 AND connected = TRUE AND id = ANY($2::text[])
+               AND platform <> 'metaads'`
+        : `SELECT id, platform FROM social_accounts
+             WHERE user_id = $1 AND connected = TRUE AND platform <> 'metaads'`,
+      post.target_account_ids?.length
+        ? [req.user!.id, post.target_account_ids]
+        : [req.user!.id]
+    );
 
-    if (accountIds.length === 0) {
+    if (targets.rows.length === 0) {
       throw new AppError(
-        "Chưa chọn kênh đăng và cũng chưa có kênh nào được kết nối.",
+        "Chưa có kênh nào được kết nối để đăng bài. Vào mục Kết Nối Đa Nền Tảng để thêm kênh.",
         409
       );
     }
@@ -186,18 +209,38 @@ postsRouter.post(
 
     try {
       const created = await zernio.createPost({
-        accountIds,
+        targets: targets.rows.map((row) => ({
+          platform: row.platform,
+          accountId: row.id,
+        })),
         content: post.content,
         mediaUrls: Array.isArray(post.media)
           ? post.media.filter((item): item is string => typeof item === "string")
           : [],
+        // Khoá chống đăng trùng gắn với chính bài này: hai lần bấm liên tiếp
+        // sẽ nhận lại bài cũ thay vì tạo hai bài trên Fanpage.
+        idempotencyKey: `post-${post.id}`,
       });
 
-      const zernioPostId = created._id ?? created.id ?? null;
+      const inner = (created.post ?? created.existingPost ?? created) as Record<string, unknown>;
+      const zernioPostId =
+        (typeof inner._id === "string" ? inner._id : null) ??
+        (typeof inner.id === "string" ? inner.id : null);
 
+      /*
+       * KHÔNG đánh dấu đã đăng ở đây.
+       *
+       * Phản hồi HTTP 200 của Zernio chỉ nghĩa là ĐÃ NHẬN yêu cầu. Bài còn phải
+       * qua hàng đợi của họ rồi mới lên nền tảng, và có thể thất bại vì token
+       * hết hạn hay nền tảng từ chối nội dung. Trạng thái thật đến sau qua
+       * webhook post.published / post.partial / post.failed.
+       *
+       * Đánh dấu published ngay tại đây là lý do trước đó giao diện báo thành
+       * công trong khi Fanpage không có bài nào.
+       */
       const updated = await queryOne(
         `UPDATE posts
-            SET status = 'published', published_at = now(), zernio_post_id = $2,
+            SET status = 'publishing', zernio_post_id = $2,
                 last_error = NULL, updated_at = now()
           WHERE id = $1 RETURNING *`,
         [post.id, zernioPostId]

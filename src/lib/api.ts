@@ -184,6 +184,57 @@ export interface Order {
   created_at: string;
 }
 
+export type PostStatus =
+  | 'draft'
+  | 'pending_approval'
+  | 'scheduled'
+  | 'publishing'
+  | 'published'
+  | 'failed';
+
+export interface Post {
+  id: number;
+  zernio_post_id: string | null;
+  content: string;
+  media: string[];
+  target_account_ids: string[];
+  status: PostStatus;
+  scheduled_for: string | null;
+  published_at: string | null;
+  platform_urls: Record<string, string>;
+  ai_generated: boolean;
+  ai_prompt: string | null;
+  stats: { likes?: number; comments?: number; shares?: number };
+  last_error: string | null;
+  created_at: string;
+}
+
+/** Nhãn tiếng Việt cho từng trạng thái bài đăng, dùng trên giao diện. */
+export const POST_STATUS_LABELS: Record<PostStatus, string> = {
+  draft: 'Bản nháp',
+  pending_approval: 'Chờ duyệt',
+  scheduled: 'Đã lên lịch',
+  publishing: 'Đang đăng',
+  published: 'Đã đăng',
+  failed: 'Đăng lỗi',
+};
+
+export interface AiConfig {
+  kind: string;
+  system_prompt: string;
+  tone: string;
+  settings: Record<string, unknown>;
+}
+
+export interface AiDocument {
+  id: number;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  created_at: string;
+  has_text: boolean;
+}
+
 export interface DashboardStats {
   orders_count: number;
   revenue: number;
@@ -309,6 +360,92 @@ export const api = {
     }) => post<{ data: Order }>("/orders", payload),
     update: (id: number, payload: Partial<Order> & { unitPrice?: number }) =>
       patch<{ data: Order }>(`/orders/${id}`, payload),
+  },
+
+  posts: {
+    list: (status?: string) =>
+      get<{
+        data: Post[];
+        summary: {
+          pending_approval: number;
+          scheduled: number;
+          published: number;
+          draft: number;
+          failed: number;
+        };
+      }>(`/posts${status && status !== "all" ? `?status=${status}` : ""}`),
+    create: (payload: {
+      content: string;
+      status?: PostStatus;
+      scheduledFor?: string | null;
+      targetAccountIds?: string[];
+      media?: string[];
+      aiGenerated?: boolean;
+      aiPrompt?: string;
+    }) => post<{ data: Post }>("/posts", payload),
+    update: (
+      id: number,
+      payload: {
+        content?: string;
+        status?: PostStatus;
+        scheduledFor?: string | null;
+        targetAccountIds?: string[];
+      }
+    ) => patch<{ data: Post }>(`/posts/${id}`, payload),
+    /** Đăng thật lên các kênh đã chọn qua Zernio. */
+    publish: (id: number) => post<{ data: Post }>(`/posts/${id}/publish`),
+    remove: (id: number) => del<{ success: boolean }>(`/posts/${id}`),
+  },
+
+  ai: {
+    config: (kind: string) =>
+      get<{ data: { config: AiConfig; documents: AiDocument[]; model: string } }>(
+        `/ai/configs/${kind}`
+      ),
+    saveConfig: (
+      kind: string,
+      payload: { systemPrompt: string; tone?: string; settings?: Record<string, unknown> }
+    ) => request<{ data: AiConfig }>(`/ai/configs/${kind}`, { method: "PUT", body: payload }),
+    addDocument: (
+      kind: string,
+      payload: { filename: string; mimeType?: string; text?: string; sizeBytes?: number }
+    ) => post<{ data: AiDocument }>(`/ai/configs/${kind}/documents`, payload),
+    removeDocument: (kind: string, id: number) =>
+      del<{ success: boolean }>(`/ai/configs/${kind}/documents/${id}`),
+    generatePost: (topic: string, goal: string, count = 3) =>
+      post<{ options: string[]; usage: { costUsd: number } }>("/ai/generate-post", {
+        topic,
+        goal,
+        count,
+      }),
+    test: (kind: string, message: string) =>
+      post<{ data: { reply: string; model: string; usage: { costUsd: number } } }>("/ai/test", {
+        kind,
+        message,
+      }),
+    handoffRules: () =>
+      get<{ data: Array<{ rule_key: string; enabled: boolean; config: Record<string, unknown> }> }>(
+        "/ai/handoff-rules"
+      ),
+    setHandoffRule: (key: string, enabled: boolean, config?: Record<string, unknown>) =>
+      patch<{ data: { rule_key: string; enabled: boolean } }>(`/ai/handoff-rules/${key}`, {
+        enabled,
+        config: config ?? {},
+      }),
+    extract: (conversationId: string) =>
+      post<{
+        data: {
+          name: string | null;
+          phone: string | null;
+          address: string | null;
+          product: string | null;
+          quantity: string | null;
+        };
+      }>(`/ai/conversations/${encodeURIComponent(conversationId)}/extract`),
+    suggest: (conversationId: string) =>
+      post<{ data: { reply: string } }>(
+        `/ai/conversations/${encodeURIComponent(conversationId)}/suggest`
+      ),
   },
 };
 

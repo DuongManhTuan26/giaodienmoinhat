@@ -1,91 +1,255 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { clsx } from 'clsx';
-import { mockPosts } from '../data/mockApi';
 import AITrainingModal from '../components/AITrainingModal';
+import {
+  api, ApiError, POST_STATUS_LABELS,
+  type Post, type PostStatus,
+} from '../lib/api';
+import { useActivePage } from '../lib/ActivePage';
+
+/** Nhãn tab -> trạng thái trong database. */
+const FILTER_TO_STATUS: Record<string, PostStatus> = {
+  'Chờ duyệt': 'pending_approval',
+  'Đã lên lịch': 'scheduled',
+  'Đã đăng': 'published',
+  'Bản nháp': 'draft',
+};
 
 export default function Content() {
+  const { accounts, activeAccountId } = useActivePage();
+
   const [activeFilter, setActiveFilter] = useState('Chờ duyệt (0)');
   const [postMode, setPostMode] = useState<'manual' | 'auto'>('manual');
   const [showAutoConfirm, setShowAutoConfirm] = useState(false);
   const [isComposerOpen, setIsComposerOpen] = useState(false);
   const [isTrainingOpen, setIsTrainingOpen] = useState(false);
-  
-  // Composer state
+
+  // Trạng thái ô soạn bài
   const [composerTopic, setComposerTopic] = useState('');
   const [composerGoal, setComposerGoal] = useState<'sales' | 'engagement' | 'announcement'>('sales');
   const [composerContent, setComposerContent] = useState('');
   const [composerMode, setComposerMode] = useState<'now' | 'schedule'>('now');
   const [aiOptions, setAiOptions] = useState<string[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [editingPostId, setEditingPostId] = useState<number | null>(null);
 
-  const [dbPosts, setDbPosts] = useState<any[]>([]);
+  const [dbPosts, setDbPosts] = useState<Post[]>([]);
+  const [busyPostId, setBusyPostId] = useState<number | null>(null);
+  const [errorMessage, setErrorMessage] = useState('');
 
-  const fetchPosts = async () => {
+  const fetchPosts = useCallback(async () => {
     try {
-      const response = await fetch('/api/posts');
-      const data = await response.json();
-      if (data.success) {
-        setDbPosts(data.data);
-      }
+      const { data } = await api.posts.list();
+      setDbPosts(data);
     } catch (error) {
-      console.error(error);
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không tải được danh sách bài');
+    }
+  }, []);
+
+  useEffect(() => { fetchPosts(); }, [fetchPosts]);
+
+  /**
+   * Chế độ đăng bài được lưu vào cấu hình AI, không giữ trong bộ nhớ trang.
+   * Nếu chỉ giữ tại đây thì tải lại trang là mất, và tiến trình nền không
+   * biết chủ shop có cho phép AI tự đăng hay không.
+   */
+  useEffect(() => {
+    api.ai.config('content')
+      .then(({ data }) => {
+        if (data.config.settings?.autoPublish === true) setPostMode('auto');
+      })
+      .catch(() => { /* chưa có cấu hình thì dùng mặc định an toàn */ });
+  }, []);
+
+  const savePostMode = async (mode: 'manual' | 'auto') => {
+    setPostMode(mode);
+    try {
+      const { data } = await api.ai.config('content');
+      await api.ai.saveConfig('content', {
+        systemPrompt: data.config.system_prompt,
+        tone: data.config.tone,
+        settings: { ...data.config.settings, autoPublish: mode === 'auto' },
+      });
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không lưu được chế độ đăng bài');
     }
   };
 
-  useEffect(() => {
-    fetchPosts();
-  }, []);
+  /** Kênh sẽ đăng: trang đang chọn, hoặc mọi kênh đăng được nếu đang xem tất cả. */
+  const targetAccountIds = activeAccountId
+    ? [activeAccountId]
+    : accounts.filter((a) => a.connected).map((a) => a.id);
 
-  const handleApprove = async (id: string) => {
-    await fetch(`/api/posts/${id}/status`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'Đã đăng' })
+  const runAction = async (id: number, action: () => Promise<unknown>) => {
+    setBusyPostId(id);
+    setErrorMessage('');
+    try {
+      await action();
+      await fetchPosts();
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Thao tác thất bại');
+    } finally {
+      setBusyPostId(null);
+    }
+  };
+
+  /** Duyệt rồi đăng thật lên nền tảng. */
+  const handleApprove = (id: number) =>
+    runAction(id, async () => {
+      if (targetAccountIds.length === 0) {
+        throw new ApiError('Chưa có kênh nào được kết nối để đăng bài.', 409);
+      }
+      await api.posts.update(id, { targetAccountIds });
+      await api.posts.publish(id);
     });
-    fetchPosts();
-  };
 
-  const handleSchedule = async (id: string) => {
-    const hours = prompt('Nhập số giờ đếm ngược để đăng (ví dụ: 2):', '2');
-    if (!hours) return;
-    const scheduleTime = new Date(Date.now() + parseInt(hours) * 3600000);
-    await fetch(`/api/posts/${id}/status`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'Đã lên lịch', scheduleTime: scheduleTime.toISOString() })
-    });
-    fetchPosts();
-  };
-
-  const handleDelete = async (id: string) => {
-    if (!confirm('Bạn có chắc muốn xoá bài này?')) return;
-    await fetch(`/api/posts/${id}`, { method: 'DELETE' });
-    fetchPosts();
-  };
-
-  const handleAcceptAiOption = async (optionContent: string) => {
-    await fetch('/api/posts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        content: optionContent,
-        status: composerMode === 'now' ? 'Đã đăng' : (postMode === 'auto' ? 'Đã lên lịch' : 'Chờ duyệt'),
-        scheduleTime: composerMode === 'schedule' ? new Date(Date.now() + 86400000).toISOString() : null
+  const handleSchedule = (id: number, current?: string | null) => {
+    const suggestion = current
+      ? new Date(current).toISOString().slice(0, 16)
+      : new Date(Date.now() + 3600000).toISOString().slice(0, 16);
+    const input = prompt(
+      'Nhập thời gian đăng theo định dạng YYYY-MM-DDTHH:mm (giờ máy bạn):',
+      suggestion
+    );
+    if (!input) return;
+    const when = new Date(input);
+    if (Number.isNaN(when.getTime())) {
+      setErrorMessage('Thời gian không hợp lệ.');
+      return;
+    }
+    if (when.getTime() <= Date.now()) {
+      setErrorMessage('Thời gian hẹn đăng phải ở tương lai.');
+      return;
+    }
+    return runAction(id, () =>
+      api.posts.update(id, {
+        status: 'scheduled',
+        scheduledFor: when.toISOString(),
+        targetAccountIds,
       })
-    });
-    setIsComposerOpen(false);
+    );
+  };
+
+  /** Huỷ lịch: đưa bài về chờ duyệt và xoá thời gian hẹn. */
+  const handleCancelSchedule = (id: number) =>
+    runAction(id, () =>
+      api.posts.update(id, { status: 'pending_approval', scheduledFor: null })
+    );
+
+  const handleDelete = (id: number) => {
+    if (!confirm('Bạn có chắc muốn xoá bài này?')) return;
+    return runAction(id, () => api.posts.remove(id));
+  };
+
+  const handleEditPost = (post: Post) => {
+    setEditingPostId(post.id);
+    setComposerContent(post.content);
+    setComposerTopic(post.ai_prompt ?? '');
     setAiOptions([]);
-    setComposerTopic('');
-    setComposerContent('');
-    fetchPosts();
+    setIsComposerOpen(true);
+  };
+
+  /** Mở bài đã đăng trên chính nền tảng. */
+  const handleOpenOnPlatform = (post: Post) => {
+    const url = Object.values(post.platform_urls ?? {}).find(
+      (value) => typeof value === 'string' && value.startsWith('http')
+    );
+    if (url) window.open(url, '_blank', 'noopener,noreferrer');
+    else setErrorMessage('Nền tảng chưa trả về đường dẫn bài viết cho bài này.');
+  };
+
+  const handleGenerate = async () => {
+    if (!composerTopic.trim()) {
+      setErrorMessage('Hãy nhập chủ đề để AI viết bài.');
+      return;
+    }
+    setIsGenerating(true);
+    setErrorMessage('');
+    try {
+      const { options } = await api.ai.generatePost(composerTopic.trim(), composerGoal);
+      setAiOptions(options);
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'AI chưa viết được bài');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  /**
+   * Lưu bài.
+   *
+   * "Đăng ngay" phải gọi Zernio thật rồi mới đánh dấu đã đăng. Bản cũ chỉ đổi
+   * trạng thái sang "Đã đăng" mà không hề đăng, nên giao diện báo thành công
+   * trong khi Fanpage không có bài nào.
+   */
+  const handleAcceptAiOption = async (optionContent: string) => {
+    setErrorMessage('');
+    try {
+      const scheduledFor =
+        composerMode === 'schedule' ? new Date(Date.now() + 86400000).toISOString() : null;
+
+      let post: Post;
+      if (editingPostId) {
+        const result = await api.posts.update(editingPostId, {
+          content: optionContent,
+          targetAccountIds,
+        });
+        post = result.data;
+      } else {
+        const result = await api.posts.create({
+          content: optionContent,
+          status: composerMode === 'schedule' ? 'scheduled' : 'pending_approval',
+          scheduledFor,
+          targetAccountIds,
+          aiGenerated: aiOptions.includes(optionContent),
+          aiPrompt: composerTopic.trim() || undefined,
+        });
+        post = result.data;
+      }
+
+      // Đăng ngay: chỉ tự đăng khi chủ shop đã bật chế độ AI tự đăng.
+      // Chế độ chờ duyệt thì bài nằm ở mục chờ duyệt, đúng như mô tả trên thẻ.
+      if (composerMode === 'now' && postMode === 'auto') {
+        if (targetAccountIds.length === 0) {
+          throw new ApiError('Chưa có kênh nào được kết nối để đăng bài.', 409);
+        }
+        await api.posts.publish(post.id);
+      }
+
+      setIsComposerOpen(false);
+      setAiOptions([]);
+      setComposerTopic('');
+      setComposerContent('');
+      setEditingPostId(null);
+      await fetchPosts();
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không lưu được bài');
+    }
   };
 
   const activeCounts = {
-    pending: dbPosts.filter(p => p.status === 'Chờ duyệt').length,
-    scheduled: dbPosts.filter(p => p.status === 'Đã lên lịch').length,
-    published: dbPosts.filter(p => p.status === 'Đã đăng').length,
-    drafts: dbPosts.filter(p => p.status === 'Bản nháp').length,
+    pending: dbPosts.filter((p) => p.status === 'pending_approval').length,
+    scheduled: dbPosts.filter((p) => p.status === 'scheduled').length,
+    published: dbPosts.filter((p) => p.status === 'published').length,
+    drafts: dbPosts.filter((p) => p.status === 'draft').length,
   };
+
+  /** Bài đã đăng trong 7 ngày gần nhất. */
+  const publishedThisWeek = dbPosts.filter(
+    (p) => p.status === 'published' && p.published_at &&
+      Date.now() - new Date(p.published_at).getTime() < 7 * 86400000
+  ).length;
+
+  /** Tương tác trung bình mỗi bài, tính từ số liệu thật của các bài đã đăng. */
+  const avgEngagement = (() => {
+    const withStats = dbPosts.filter((p) => p.status === 'published' && p.stats);
+    if (withStats.length === 0) return 0;
+    const total = withStats.reduce(
+      (sum, p) => sum + (p.stats.likes ?? 0) + (p.stats.comments ?? 0) + (p.stats.shares ?? 0),
+      0
+    );
+    return Math.round(total / withStats.length);
+  })();
 
   const FILTERS = [
     `Chờ duyệt (${activeCounts.pending})`,
@@ -94,26 +258,20 @@ export default function Content() {
     'Bản nháp'
   ];
 
-
   const filteredPosts = useMemo(() => {
-    let filterStatus = '';
-    if (activeFilter.includes('Chờ duyệt')) filterStatus = 'Chờ duyệt';
-    else if (activeFilter.includes('Đã lên lịch')) filterStatus = 'Đã lên lịch';
-    else if (activeFilter.includes('Đã đăng')) filterStatus = 'Đã đăng';
-    else filterStatus = 'Bản nháp';
-
-    return dbPosts.filter(post => post.status === filterStatus);
+    const key = Object.keys(FILTER_TO_STATUS).find((label) => activeFilter.startsWith(label));
+    const status = key ? FILTER_TO_STATUS[key] : 'draft';
+    return dbPosts.filter((post) => post.status === status);
   }, [activeFilter, dbPosts]);
 
-  
-
-  const getStatusColor = (status: string) => {
+  const getStatusColor = (status: PostStatus) => {
     switch (status) {
-      case 'Chờ duyệt': return 'text-yellow-500 bg-yellow-500/20 border-yellow-500/30';
-      case 'Đã lên lịch': return 'text-blue-500 bg-blue-500/20 border-blue-500/30';
-      case 'Đã đăng': return 'text-green-500 bg-green-500/20 border-green-500/30';
-      case 'Bản nháp': return 'text-gray-400 bg-gray-500/20 border-gray-500/30';
-      default: return 'text-on-surface bg-surface-variant border-outline-variant';
+      case 'pending_approval': return 'text-yellow-500 bg-yellow-500/20 border-yellow-500/30';
+      case 'scheduled': return 'text-blue-500 bg-blue-500/20 border-blue-500/30';
+      case 'published': return 'text-green-500 bg-green-500/20 border-green-500/30';
+      case 'publishing': return 'text-primary bg-primary/20 border-primary/30';
+      case 'failed': return 'text-error bg-error/20 border-error/30';
+      default: return 'text-gray-400 bg-gray-500/20 border-gray-500/30';
     }
   };
 
@@ -205,7 +363,7 @@ export default function Content() {
           </div>
           <div className="flex flex-col sm:flex-row gap-4 shrink-0 lg:w-[500px]">
             <div 
-              onClick={() => setPostMode('manual')}
+              onClick={() => savePostMode('manual')}
               className={clsx(
                 "flex-1 p-4 rounded-xl border cursor-pointer transition-all",
                 postMode === 'manual' 
@@ -270,13 +428,15 @@ export default function Content() {
           <div>
             <h3 className="font-mono text-[11px] font-bold tracking-wider text-on-surface-variant uppercase mb-1">ĐÃ ĐĂNG TUẦN NÀY</h3>
             <div className="flex items-baseline gap-2">
-              <span className="font-headline-sm text-3xl font-bold text-on-surface">{activeCounts.published}</span>
+              <span className="font-headline-sm text-3xl font-bold text-on-surface">{publishedThisWeek}</span>
             </div>
           </div>
-          <div className="flex items-center gap-1.5 text-xs font-bold text-green-400 bg-green-400/10 self-start px-2 py-1 rounded-md mt-auto">
-            <span className="material-symbols-outlined text-[14px]">trending_up</span>
-            +4 so với tuần trước
-          </div>
+          {activeCounts.published > publishedThisWeek && (
+            <div className="flex items-center gap-1.5 text-xs font-bold text-green-400 bg-green-400/10 self-start px-2 py-1 rounded-md mt-auto">
+              <span className="material-symbols-outlined text-[14px]">trending_up</span>
+              {activeCounts.published} bài tổng cộng
+            </div>
+          )}
         </div>
 
         <div className="bg-surface-container/30 border border-outline-variant rounded-2xl p-5 relative overflow-hidden flex flex-col justify-between group hover:border-primary/50 transition-colors h-[140px]">
@@ -284,9 +444,11 @@ export default function Content() {
           <div>
             <h3 className="font-mono text-[11px] font-bold tracking-wider text-on-surface-variant uppercase mb-1">TƯƠNG TÁC TRUNG BÌNH</h3>
             <div className="flex items-baseline gap-2">
-              <span className="font-headline-sm text-3xl font-bold text-on-surface">248</span>
+              <span className="font-headline-sm text-3xl font-bold text-on-surface">{avgEngagement}</span>
             </div>
-            <p className="text-xs text-on-surface-variant mt-1 font-medium">Lượt trên mỗi bài</p>
+            <p className="text-xs text-on-surface-variant mt-1 font-medium">
+              {activeCounts.published > 0 ? 'Lượt trên mỗi bài' : 'Chưa có bài nào được đăng'}
+            </p>
           </div>
         </div>
       </div>
@@ -319,10 +481,10 @@ export default function Content() {
             {/* Top Bar */}
             <div className="p-4 flex items-center justify-between border-b border-outline-variant/50">
               <span className={clsx("px-2.5 py-1 rounded-full text-[11px] font-bold tracking-wider border", getStatusColor(post.status))}>
-                {post.status.toUpperCase()}
+                {POST_STATUS_LABELS[post.status].toUpperCase()}
               </span>
               <div className="flex gap-2">
-                {post.status === 'Chờ duyệt' && (
+                {post.status === 'pending_approval' && (
                   <>
                     <button onClick={() => handleApprove(post.id)} className="text-green-500 hover:bg-green-500/10 p-1 rounded-md transition-colors" title="Duyệt đăng">
                       <span className="material-symbols-outlined text-[18px]">check_circle</span>
@@ -375,25 +537,25 @@ export default function Content() {
 
             {/* Footer Buttons */}
             <div className="p-4 bg-surface-container/50 border-t border-outline-variant/50 flex gap-2 shrink-0 mt-auto">
-              {post.status === 'Chờ duyệt' && (
+              {post.status === 'pending_approval' && (
                 <>
-                  <button className="flex-1 py-2 bg-primary text-on-primary font-bold text-xs rounded-lg hover:brightness-110 transition-all shadow-sm">Duyệt và đăng</button>
-                  <button onClick={() => setIsComposerOpen(true)} className="flex-1 py-2 bg-surface-variant text-on-surface font-bold text-xs rounded-lg hover:bg-outline-variant transition-colors border border-outline-variant/50">Sửa</button>
-                  <button className="w-9 shrink-0 flex items-center justify-center bg-error/10 text-error rounded-lg hover:bg-error/20 transition-colors border border-error/20">
+                  <button onClick={() => handleApprove(post.id)} disabled={busyPostId === post.id} className="flex-1 py-2 bg-primary text-on-primary font-bold text-xs rounded-lg hover:brightness-110 transition-all shadow-sm disabled:opacity-60">{busyPostId === post.id ? 'Đang đăng…' : 'Duyệt và đăng'}</button>
+                  <button onClick={() => handleEditPost(post)} className="flex-1 py-2 bg-surface-variant text-on-surface font-bold text-xs rounded-lg hover:bg-outline-variant transition-colors border border-outline-variant/50">Sửa</button>
+                  <button onClick={() => handleDelete(post.id)} className="w-9 shrink-0 flex items-center justify-center bg-error/10 text-error rounded-lg hover:bg-error/20 transition-colors border border-error/20">
                     <span className="material-symbols-outlined text-[16px]">delete</span>
                   </button>
                 </>
               )}
-              {post.status === 'Đã lên lịch' && (
+              {post.status === 'scheduled' && (
                 <>
-                  <button className="flex-1 py-2 bg-surface-variant text-on-surface font-bold text-xs rounded-lg hover:bg-outline-variant transition-colors border border-outline-variant/50">Đổi lịch</button>
-                  <button className="flex-1 py-2 bg-surface-variant text-on-surface font-bold text-xs rounded-lg hover:bg-outline-variant transition-colors border border-outline-variant/50">Hủy lịch</button>
+                  <button onClick={() => handleSchedule(post.id, post.scheduled_for)} className="flex-1 py-2 bg-surface-variant text-on-surface font-bold text-xs rounded-lg hover:bg-outline-variant transition-colors border border-outline-variant/50">Đổi lịch</button>
+                  <button onClick={() => handleCancelSchedule(post.id)} className="flex-1 py-2 bg-surface-variant text-on-surface font-bold text-xs rounded-lg hover:bg-outline-variant transition-colors border border-outline-variant/50">Hủy lịch</button>
                 </>
               )}
-              {post.status === 'Đã đăng' && (
+              {post.status === 'published' && (
                 <>
-                  <button className="flex-1 py-2 bg-surface-variant text-on-surface font-bold text-xs rounded-lg hover:bg-outline-variant transition-colors border border-outline-variant/50">Xem trên Facebook</button>
-                  <button className="flex-1 py-2 bg-surface-variant text-on-surface font-bold text-xs rounded-lg hover:bg-outline-variant transition-colors border border-outline-variant/50">Xem bình luận</button>
+                  <button onClick={() => handleOpenOnPlatform(post)} className="flex-1 py-2 bg-surface-variant text-on-surface font-bold text-xs rounded-lg hover:bg-outline-variant transition-colors border border-outline-variant/50">Xem trên nền tảng</button>
+                  <button onClick={() => handleOpenOnPlatform(post)} className="flex-1 py-2 bg-surface-variant text-on-surface font-bold text-xs rounded-lg hover:bg-outline-variant transition-colors border border-outline-variant/50">Xem bình luận</button>
                 </>
               )}
             </div>
@@ -517,15 +679,6 @@ export default function Content() {
                     <span className="material-symbols-outlined text-on-surface-variant">upload_file</span>
                   </div>
                   <span className="text-sm font-medium text-on-surface-variant">Kéo thả ảnh vào đây hoặc bấm để chọn</span>
-                </div>
-                {/* Fake selected images row */}
-                <div className="flex gap-3 mt-4">
-                  <div className="w-20 h-20 rounded-lg bg-surface-variant border border-outline-variant relative group overflow-hidden">
-                    <img src="https://images.unsplash.com/photo-1511920170033-f8396924c348?w=150&q=80" alt="thumb" className="w-full h-full object-cover opacity-80" />
-                    <button className="absolute top-1 right-1 w-5 h-5 bg-black/60 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-error">
-                      <span className="material-symbols-outlined text-[12px] text-white">close</span>
-                    </button>
-                  </div>
                 </div>
               </div>
 

@@ -33,6 +33,7 @@ export async function handleWebhookEvent(event: WebhookEvent): Promise<void> {
       await handleAccountChange(event);
       break;
     case "post.published":
+    case "post.partial":
     case "post.failed":
       await handlePostResult(event);
       break;
@@ -257,7 +258,10 @@ async function handlePostResult(event: WebhookEvent): Promise<void> {
     | undefined;
   if (!post?.id) return;
 
-  const published = event.eventType === "post.published";
+  // partial = đăng được một số kênh, thất bại số còn lại. Coi là đã đăng
+  // nhưng giữ lại thông báo để chủ shop biết kênh nào chưa lên.
+  const published =
+    event.eventType === "post.published" || event.eventType === "post.partial";
 
   await query(
     `UPDATE posts
@@ -277,7 +281,12 @@ async function handlePostResult(event: WebhookEvent): Promise<void> {
       published,
       post.url ?? null,
       event.accountId ?? "unknown",
-      published ? null : (post.error ?? "Đăng bài thất bại"),
+      event.eventType === "post.published"
+        ? null
+        : (post.error ??
+           (event.eventType === "post.partial"
+             ? "Một số kênh đăng chưa thành công"
+             : "Đăng bài thất bại")),
     ]
   );
 }
