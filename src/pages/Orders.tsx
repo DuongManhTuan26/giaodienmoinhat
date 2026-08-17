@@ -1,44 +1,173 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { clsx } from 'clsx';
-import { mockOrders } from '../data/mockApi';
+import { useNavigate } from 'react-router-dom';
+import { api, ApiError, formatCurrency, type Order } from '../lib/api';
 
 const FILTERS = ['Tất cả', 'Chờ xác nhận', 'Đã xác nhận', 'Đang giao', 'Hoàn thành', 'Đã hủy'];
 
+/** Nhãn tiếng Việt trên giao diện <-> trạng thái trong database. */
+const LABEL_TO_STATUS: Record<string, Order['status']> = {
+  'Chờ xác nhận': 'pending',
+  'Đã xác nhận': 'confirmed',
+  'Đang giao': 'shipping',
+  'Hoàn thành': 'completed',
+  'Đã hủy': 'cancelled',
+};
+const STATUS_TO_LABEL: Record<Order['status'], string> = {
+  pending: 'Chờ xác nhận',
+  confirmed: 'Đã xác nhận',
+  shipping: 'Đang giao',
+  completed: 'Hoàn thành',
+  cancelled: 'Đã hủy',
+};
+
+interface DisplayOrder {
+  raw: Order;
+  id: string;
+  time: string;
+  date: string;
+  customerInitial: string;
+  customerName: string;
+  phone: string;
+  productName: string;
+  quantity: number;
+  value: string;
+  source: string;
+  status: string;
+  address: string;
+  note: string | null;
+  telegramSent: boolean;
+  conversationId: string | null;
+}
+
 export default function Orders() {
+  const navigate = useNavigate();
+
   const [activeFilters, setActiveFilters] = useState<string[]>(['Tất cả']);
   const [search, setSearch] = useState('');
-  const [selectedOrder, setSelectedOrder] = useState<typeof mockOrders[0] | null>(null);
+  const [selectedOrder, setSelectedOrder] = useState<DisplayOrder | null>(null);
   const [showCopyToast, setShowCopyToast] = useState(false);
   const [openDropdownId, setOpenDropdownId] = useState<string | null>(null);
 
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [summary, setSummary] = useState({ total: 0, pending: 0, shipping: 0, completed: 0, revenue: 0 });
+  const [loading, setLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [busyId, setBusyId] = useState<number | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data, summary: s } = await api.orders.list();
+      setOrders(data);
+      setSummary(s);
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không tải được đơn hàng');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
   const toggleFilter = (filter: string) => {
-    if (filter === 'Tất cả') {
-      setActiveFilters(['Tất cả']);
-      return;
-    }
-    
-    let newFilters = activeFilters.filter(f => f !== 'Tất cả');
-    if (newFilters.includes(filter)) {
-      newFilters = newFilters.filter(f => f !== filter);
-    } else {
-      newFilters.push(filter);
-    }
-    
-    if (newFilters.length === 0) {
-      newFilters = ['Tất cả'];
-    }
-    
+    if (filter === 'Tất cả') { setActiveFilters(['Tất cả']); return; }
+    let newFilters = activeFilters.filter((f) => f !== 'Tất cả');
+    if (newFilters.includes(filter)) newFilters = newFilters.filter((f) => f !== filter);
+    else newFilters.push(filter);
+    if (newFilters.length === 0) newFilters = ['Tất cả'];
     setActiveFilters(newFilters);
   };
 
+  /** Đơn hàng thật chuyển sang hình dạng mà bảng đang vẽ. */
+  const displayOrders: DisplayOrder[] = useMemo(
+    () => orders.map((order) => {
+      const created = new Date(order.created_at);
+      return {
+        raw: order,
+        id: `#${order.code}`,
+        time: created.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }),
+        date: created.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' }),
+        customerInitial: (order.customer_name || '?').trim().charAt(0).toUpperCase(),
+        customerName: order.customer_name || 'Khách chưa có tên',
+        phone: order.phone || '',
+        productName: order.product,
+        quantity: order.quantity,
+        value: formatCurrency(order.total),
+        source: order.closed_by === 'ai' ? 'AI chốt' : 'Nhân viên chốt',
+        status: STATUS_TO_LABEL[order.status],
+        address: order.address || 'Chưa có địa chỉ',
+        note: order.note,
+        telegramSent: Boolean(order.telegram_sent_at),
+        conversationId: (order as any).conversation_id ?? null,
+      };
+    }),
+    [orders]
+  );
+
   const filteredOrders = useMemo(() => {
-    return mockOrders.filter(order => {
-      const matchSearch = order.customerName.toLowerCase().includes(search.toLowerCase()) || 
-                          order.phone.includes(search);
+    const term = search.trim().toLowerCase();
+    return displayOrders.filter((order) => {
+      const matchSearch = !term
+        || order.customerName.toLowerCase().includes(term)
+        || order.phone.includes(term)
+        || order.id.toLowerCase().includes(term);
       const matchFilter = activeFilters.includes('Tất cả') || activeFilters.includes(order.status);
       return matchSearch && matchFilter;
     });
-  }, [search, activeFilters]);
+  }, [displayOrders, search, activeFilters]);
+
+  /** Số đơn tạo trong hôm nay. */
+  const ordersToday = useMemo(() => {
+    const today = new Date().toDateString();
+    return orders.filter((o) => new Date(o.created_at).toDateString() === today).length;
+  }, [orders]);
+
+  const handleChangeStatus = async (order: DisplayOrder, label: string) => {
+    const status = LABEL_TO_STATUS[label];
+    if (!status) return;
+    setBusyId(order.raw.id);
+    setErrorMessage('');
+    setOpenDropdownId(null);
+    try {
+      await api.orders.update(order.raw.id, { status });
+      await load();
+      if (selectedOrder?.raw.id === order.raw.id) setSelectedOrder(null);
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không đổi được trạng thái');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  /**
+   * Xuất danh sách đơn ra tệp CSV mở được bằng Excel.
+   * Dùng dấu chấm phẩy và thêm BOM để Excel bản tiếng Việt đọc đúng dấu.
+   */
+  const handleExport = () => {
+    if (filteredOrders.length === 0) {
+      setErrorMessage('Không có đơn nào để xuất.');
+      return;
+    }
+    const header = ['Mã đơn', 'Ngày', 'Khách hàng', 'Điện thoại', 'Địa chỉ',
+                    'Sản phẩm', 'Số lượng', 'Đơn giá', 'Tổng tiền', 'Trạng thái', 'Chốt bởi', 'Ghi chú'];
+    const escape = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const rows = filteredOrders.map((o) => [
+      o.raw.code,
+      new Date(o.raw.created_at).toLocaleString('vi-VN'),
+      o.customerName, o.phone, o.address,
+      o.productName, o.quantity, o.raw.unit_price, o.raw.total,
+      o.status, o.source, o.note ?? '',
+    ].map(escape).join(';'));
+
+    const csv = '\uFEFF' + [header.map(escape).join(';'), ...rows].join('\r\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `don-hang-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -93,7 +222,7 @@ export default function Orders() {
           <div className="flex items-center gap-3 mb-2">
             <h1 className="font-headline-sm text-3xl font-bold text-on-surface tracking-tight">Đơn hàng</h1>
             <span className="font-mono text-xs font-bold tracking-wider text-primary bg-primary/10 border border-primary/20 px-2.5 py-1 rounded-full uppercase">
-              7 ĐƠN HÔM NAY
+              {ordersToday} ĐƠN HÔM NAY
             </span>
           </div>
           <p className="text-on-surface-variant text-sm">Tất cả đơn hàng AI chốt được và bạn chốt tay</p>
@@ -116,7 +245,7 @@ export default function Orders() {
             <div className="flex items-baseline gap-2">
               <span className="font-headline-sm text-3xl font-bold text-on-surface">7</span>
             </div>
-            <p className="text-xs text-on-surface-variant mt-1 font-medium">Tổng 4.350.000 đ</p>
+            <p className="text-xs text-on-surface-variant mt-1 font-medium">{`Tổng ${formatCurrency(summary.revenue)}`}</p>
           </div>
           <div className="flex items-center gap-1.5 text-xs font-bold text-green-400 bg-green-400/10 self-start px-2 py-1 rounded-md mt-auto">
             <span className="material-symbols-outlined text-[14px]">trending_up</span>
@@ -130,11 +259,14 @@ export default function Orders() {
           <div>
             <h3 className="font-mono text-[11px] font-bold tracking-wider text-on-surface-variant uppercase mb-1">CHỜ XÁC NHẬN</h3>
             <div className="flex items-baseline gap-2">
-              <span className="font-headline-sm text-3xl font-bold text-on-surface">3</span>
+              <span className="font-headline-sm text-3xl font-bold text-on-surface">{summary.pending}</span>
             </div>
             <p className="text-xs text-on-surface-variant mt-1 font-medium">Cần bạn gọi lại cho khách</p>
           </div>
-          <button className="text-xs font-bold text-primary bg-primary/10 hover:bg-primary/20 border border-primary/20 self-start px-3 py-1.5 rounded-md transition-colors mt-auto">
+          <button
+            onClick={() => setActiveFilters(['Chờ xác nhận'])}
+            className="text-xs font-bold text-primary bg-primary/10 hover:bg-primary/20 border border-primary/20 self-start px-3 py-1.5 rounded-md transition-colors mt-auto"
+          >
             Xem ngay
           </button>
         </div>
@@ -200,7 +332,7 @@ export default function Orders() {
           })}
         </div>
 
-        <button className="shrink-0 px-4 py-2 text-sm font-bold text-on-surface bg-surface-container border border-outline-variant hover:bg-surface-variant rounded-lg transition-colors flex items-center gap-2 self-start xl:self-auto">
+        <button className="shrink-0 px-4 py-2 text-sm font-bold text-on-surface bg-surface-container border border-outline-variant hover:bg-surface-variant rounded-lg transition-colors flex items-center gap-2 self-start xl:self-auto" onClick={handleExport}>
           <span className="material-symbols-outlined text-[18px]">download</span>
           Xuất Excel
         </button>
@@ -305,7 +437,11 @@ export default function Orders() {
                           </button>
                           <button 
                             className="flex items-center gap-3 px-4 py-2.5 text-sm font-medium text-on-surface hover:bg-surface-variant transition-colors w-full text-left"
-                            onClick={(e) => { e.stopPropagation(); setOpenDropdownId(null); }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOpenDropdownId(null);
+                              if (order.phone) window.location.href = `tel:${order.phone.replace(/\s/g, '')}`;
+                            }}
                           >
                             <span className="material-symbols-outlined text-[18px]">call</span> Gọi cho khách
                           </button>
@@ -340,19 +476,11 @@ export default function Orders() {
         
         {/* Pagination */}
         <div className="border-t border-outline-variant px-5 py-4 flex items-center justify-between bg-surface-container/20">
-          <span className="text-sm text-on-surface-variant font-medium">Hiển thị 1 đến {filteredOrders.length} của 124 đơn hàng</span>
-          <div className="flex items-center gap-1">
-            <button className="w-8 h-8 flex items-center justify-center rounded-lg text-on-surface-variant hover:bg-surface-variant transition-colors disabled:opacity-50">
-              <span className="material-symbols-outlined text-[20px]">chevron_left</span>
-            </button>
-            <button className="w-8 h-8 flex items-center justify-center rounded-lg bg-primary text-on-primary font-bold text-sm shadow-sm transition-colors">1</button>
-            <button className="w-8 h-8 flex items-center justify-center rounded-lg text-on-surface-variant hover:bg-surface-variant font-medium text-sm transition-colors">2</button>
-            <button className="w-8 h-8 flex items-center justify-center rounded-lg text-on-surface-variant hover:bg-surface-variant font-medium text-sm transition-colors">3</button>
-            <span className="w-8 h-8 flex items-center justify-center text-on-surface-variant">...</span>
-            <button className="w-8 h-8 flex items-center justify-center rounded-lg text-on-surface-variant hover:bg-surface-variant transition-colors">
-              <span className="material-symbols-outlined text-[20px]">chevron_right</span>
-            </button>
-          </div>
+          <span className="text-sm text-on-surface-variant font-medium">
+            {filteredOrders.length === 0
+              ? 'Chưa có đơn hàng nào'
+              : `Hiển thị ${filteredOrders.length} trên tổng ${summary.total} đơn hàng`}
+          </span>
         </div>
       </div>
 
@@ -399,7 +527,12 @@ export default function Orders() {
                       <button onClick={(e) => handleCopyPhone(selectedOrder.phone, e)} className="text-on-surface-variant hover:text-primary transition-colors p-1" title="Sao chép số">
                         <span className="material-symbols-outlined text-[16px]">content_copy</span>
                       </button>
-                      <button className="text-on-surface-variant hover:text-green-400 transition-colors p-1" title="Gọi ngay">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); if (selectedOrder.phone) window.location.href = `tel:${selectedOrder.phone.replace(/\s/g, '')}`; }}
+                        disabled={!selectedOrder.phone}
+                        className="text-on-surface-variant hover:text-green-400 transition-colors p-1 disabled:opacity-30"
+                        title="Gọi ngay"
+                      >
                         <span className="material-symbols-outlined text-[16px]">call</span>
                       </button>
                     </div>
@@ -470,11 +603,26 @@ export default function Orders() {
             </div>
 
             {/* Panel Footer Actions */}
-            <div className="p-5 border-t border-outline-variant bg-surface-container/50 flex gap-3">
-              <button className="flex-1 px-4 py-3 text-sm font-bold bg-primary text-on-primary rounded-xl shadow-[0_0_15px_rgba(0,229,255,0.2)] hover:brightness-110 hover:shadow-[0_0_20px_rgba(0,229,255,0.4)] transition-all flex items-center justify-center gap-2">
-                Đổi trạng thái đơn
-              </button>
-              <button className="px-4 py-3 text-sm font-bold text-on-surface-variant bg-surface-container border border-outline-variant hover:text-on-surface hover:bg-surface-variant rounded-xl transition-colors flex items-center justify-center gap-2">
+            <div className="p-5 border-t border-outline-variant bg-surface-container/50 flex flex-col gap-3">
+              <div className="flex flex-wrap gap-2">
+                {FILTERS.filter((f) => f !== 'Tất cả' && f !== selectedOrder.status).map((label) => (
+                  <button
+                    key={label}
+                    onClick={() => handleChangeStatus(selectedOrder, label)}
+                    disabled={busyId === selectedOrder.raw.id}
+                    className="px-3 py-2 text-xs font-bold text-on-surface bg-surface-container border border-outline-variant rounded-lg hover:border-primary hover:text-primary transition-colors disabled:opacity-50"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={() => selectedOrder.conversationId
+                  ? navigate('/inbox')
+                  : setErrorMessage('Đơn này không được tạo từ hội thoại nào.')}
+                className="px-4 py-3 text-sm font-bold text-on-surface bg-surface-container border border-outline-variant rounded-xl hover:bg-surface-variant transition-colors flex items-center justify-center gap-2"
+              >
+                <span className="material-symbols-outlined text-[18px]">forum</span>
                 Mở đoạn chat gốc
               </button>
             </div>
