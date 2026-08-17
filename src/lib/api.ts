@@ -504,6 +504,29 @@ export const api = {
       }>("/ads/analyze"),
   },
 
+  analytics: {
+    overview: (range = "7days") =>
+      get<{
+        days: number;
+        stats: {
+          revenue: number; ordersCount: number; conversationsCount: number;
+          closeRate: number; aiMessages: number; aiClosed: number;
+          handoffs: number; newCustomers: number; leadsWithPhone: number;
+        };
+        trends: Record<string, number | null>;
+        series: Array<{ name: string; revenue: number; orders: number; aiInteractions: number }>;
+        sources: Array<{ name: string; value: number; count: number }>;
+      }>(`/analytics/overview?range=${range}`),
+    analyze: (range = "7days") =>
+      post<{
+        data: { hasData: boolean; findings: string; recommendation: string; actions: string[] };
+      }>("/analytics/analyze", { range }),
+    reports: () =>
+      get<{ data: Array<{ report_date: string; findings: string; recommendation: string }> }>(
+        "/analytics/reports"
+      ),
+  },
+
   ai: {
     config: (kind: string) =>
       get<{ data: { config: AiConfig; documents: AiDocument[]; model: string } }>(

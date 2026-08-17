@@ -1,45 +1,122 @@
-import React, { useState } from 'react';
-import { 
-  AreaChart, Area, 
-  BarChart, Bar, 
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  AreaChart, Area,
+  BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend
 } from 'recharts';
 import { clsx } from 'clsx';
 import AITrainingModal from '../components/AITrainingModal';
+import { api, ApiError, formatCurrency } from '../lib/api';
 
-const performanceData = [
-  { name: '01/08', revenue: 15000000, orders: 45, aiInteractions: 120 },
-  { name: '02/08', revenue: 22000000, orders: 60, aiInteractions: 150 },
-  { name: '03/08', revenue: 18000000, orders: 55, aiInteractions: 180 },
-  { name: '04/08', revenue: 28000000, orders: 85, aiInteractions: 210 },
-  { name: '05/08', revenue: 32000000, orders: 95, aiInteractions: 250 },
-  { name: '06/08', revenue: 45000000, orders: 120, aiInteractions: 320 },
-  { name: '07/08', revenue: 38000000, orders: 110, aiInteractions: 280 },
-];
-
-const trafficSourceData = [
-  { name: 'Facebook', value: 45 },
-  { name: 'Tiktok', value: 30 },
-  { name: 'Google Ads', value: 15 },
-  { name: 'Direct', value: 10 },
-];
-const COLORS = ['#00e5ff', '#d946ef', '#f59e0b', '#3b82f6'];
+const COLORS = ['#00e5ff', '#d946ef', '#f59e0b', '#3b82f6', '#10b981', '#ef4444'];
 
 export default function Analytics() {
   const [timeRange, setTimeRange] = useState('7days');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [aiReport, setAiReport] = useState<string | null>(null);
+  const [aiActions, setAiActions] = useState<string[]>([]);
   const [isTrainingOpen, setIsTrainingOpen] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [loading, setLoading] = useState(true);
 
-  const runAiAnalysis = () => {
+  const [stats, setStats] = useState({
+    revenue: 0, ordersCount: 0, conversationsCount: 0, closeRate: 0,
+    aiMessages: 0, aiClosed: 0, handoffs: 0, newCustomers: 0, leadsWithPhone: 0,
+  });
+  const [trends, setTrends] = useState<Record<string, number | null>>({});
+  const [performanceData, setPerformanceData] = useState<
+    Array<{ name: string; revenue: number; orders: number; aiInteractions: number }>
+  >([]);
+  const [trafficSourceData, setTrafficSourceData] = useState<
+    Array<{ name: string; value: number; count: number }>
+  >([]);
+
+  const load = useCallback(async (range: string) => {
+    setLoading(true);
+    try {
+      const data = await api.analytics.overview(range);
+      setStats(data.stats);
+      setTrends(data.trends);
+      setPerformanceData(data.series);
+      setTrafficSourceData(data.sources);
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không tải được số liệu');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(timeRange); }, [load, timeRange]);
+
+  // Báo cáo AI đã lưu trước đó, hiện lại luôn thay vì bắt bấm phân tích lại.
+  useEffect(() => {
+    api.analytics.reports()
+      .then(({ data }) => {
+        if (data.length > 0) setAiReport(data[0].findings + '\n\n' + data[0].recommendation);
+      })
+      .catch(() => { /* chưa có báo cáo nào */ });
+  }, []);
+
+  /**
+   * Gọi AI phân tích thật.
+   * Bản cũ chỉ chờ 2 giây rồi hiện một đoạn văn viết sẵn nhắc tới Meta Ads và
+   * TikTok, kể cả khi shop chưa kết nối hai kênh đó.
+   */
+  const runAiAnalysis = async () => {
     setIsAnalyzing(true);
     setAiReport(null);
-    setTimeout(() => {
-      setAiReport("Phân tích dữ liệu 7 ngày qua cho thấy: Doanh thu đang có xu hướng tăng mạnh vào các ngày cuối tuần (05-06/08) nhờ chiến dịch Meta Ads. Tuy nhiên, tỷ lệ phản hồi trên TikTok đang chậm lại. Đề xuất: Tăng ngân sách 15% cho Meta Ads và kích hoạt Kịch bản giảm giá khẩn cấp (Flash Sale) trên TikTok để kéo lại tương tác.");
+    setAiActions([]);
+    setErrorMessage('');
+    try {
+      const { data } = await api.analytics.analyze(timeRange);
+      setAiReport(
+        data.recommendation ? `${data.findings}\n\n${data.recommendation}` : data.findings
+      );
+      setAiActions(data.actions);
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'AI chưa phân tích được');
+    } finally {
       setIsAnalyzing(false);
-    }, 2000);
+    }
   };
+
+  /** Định dạng phần trăm thay đổi; kỳ trước bằng 0 thì không hiện gì. */
+  const trendText = (key: string): { text: string; isUp: boolean } | null => {
+    const value = trends[key];
+    if (value === null || value === undefined) return null;
+    return { text: `${value > 0 ? '+' : ''}${value}%`, isUp: value >= 0 };
+  };
+
+  const metricCards = [
+    {
+      label: 'Tổng doanh thu',
+      value: formatCurrency(stats.revenue),
+      trend: trendText('revenue'),
+      icon: 'payments',
+    },
+    {
+      label: 'Số đơn hàng',
+      value: String(stats.ordersCount),
+      trend: trendText('ordersCount'),
+      icon: 'receipt_long',
+    },
+    {
+      label: 'Tỷ lệ chốt đơn',
+      value: `${stats.closeRate}%`,
+      trend: null,
+      icon: 'done_all',
+      hint: `${stats.ordersCount} đơn / ${stats.conversationsCount} hội thoại`,
+    },
+    {
+      label: 'AI Tương tác',
+      value: stats.aiMessages.toLocaleString('vi-VN'),
+      trend: trendText('aiMessages'),
+      icon: 'forum',
+    },
+  ];
+
+  const hasAnyData = stats.conversationsCount > 0 || stats.ordersCount > 0;
 
   return (
     <main className="flex-1 w-full relative bg-background text-on-surface">
@@ -72,6 +149,12 @@ export default function Analytics() {
           </div>
         </div>
 
+        {errorMessage && (
+          <div className="mb-gutter text-sm text-error bg-error/10 border border-error/30 rounded-xl px-4 py-3">
+            {errorMessage}
+          </div>
+        )}
+
         {/* AI Analysis Panel */}
         <div className="mb-gutter bg-gradient-to-r from-primary/10 via-surface-container-high to-surface-container rounded-2xl border border-primary/30 p-6 shadow-[0_0_30px_rgba(0,229,255,0.05)] relative overflow-hidden">
           <div className="absolute top-0 right-0 w-64 h-64 bg-primary/10 rounded-full blur-3xl pointer-events-none translate-x-1/2 -translate-y-1/2"></div>
@@ -87,7 +170,9 @@ export default function Analytics() {
               
               {!aiReport && !isAnalyzing && (
                 <p className="text-sm text-on-surface-variant font-medium">
-                  Hệ thống đã thu thập đủ dữ liệu. Bấm "Bắt đầu phân tích" để AI đánh giá các chỉ số và đưa ra chiến lược tối ưu.
+                  {hasAnyData
+                    ? `Đã có ${stats.conversationsCount} hội thoại và ${stats.ordersCount} đơn trong kỳ này. Bấm "Bắt đầu phân tích" để AI đánh giá và đề xuất hướng tối ưu.`
+                    : 'Chưa có hội thoại hay đơn hàng nào trong kỳ này. AI cần dữ liệu thật để phân tích — hãy kết nối kênh bán hàng trước.'}
                 </p>
               )}
 
@@ -105,17 +190,27 @@ export default function Analytics() {
 
               {aiReport && (
                 <div className="mt-3 p-4 bg-surface-container-lowest/50 border border-outline-variant rounded-xl">
-                  <p className="text-sm text-on-surface leading-relaxed">{aiReport}</p>
+                  <p className="text-sm text-on-surface leading-relaxed whitespace-pre-line">{aiReport}</p>
+                  {aiActions.length > 0 && (
+                    <ul className="mt-3 pt-3 border-t border-outline-variant/50 space-y-1.5">
+                      {aiActions.map((action, idx) => (
+                        <li key={idx} className="flex items-start gap-2 text-sm text-primary">
+                          <span className="material-symbols-outlined text-[16px] mt-0.5">arrow_right</span>
+                          <span>{action}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               )}
             </div>
 
             <button 
               onClick={runAiAnalysis}
-              disabled={isAnalyzing}
+              disabled={isAnalyzing || !hasAnyData}
               className={clsx(
                 "shrink-0 px-6 py-3 rounded-xl font-bold text-sm tracking-wide transition-all shadow-lg flex items-center gap-2",
-                isAnalyzing ? "bg-surface-variant text-on-surface-variant cursor-not-allowed" : "bg-primary text-on-primary hover:brightness-110 shadow-[0_0_20px_rgba(0,229,255,0.3)]"
+                (isAnalyzing || !hasAnyData) ? "bg-surface-variant text-on-surface-variant cursor-not-allowed" : "bg-primary text-on-primary hover:brightness-110 shadow-[0_0_20px_rgba(0,229,255,0.3)]"
               )}
             >
               {isAnalyzing ? (
@@ -132,12 +227,7 @@ export default function Analytics() {
 
         {/* Overview Metric Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-gutter mb-gutter">
-          {[
-            { label: 'Tổng doanh thu', value: '198.000.000 đ', trend: '+15%', isUp: true, icon: 'payments' },
-            { label: 'Số đơn hàng', value: '570', trend: '+8%', isUp: true, icon: 'receipt_long' },
-            { label: 'Tỷ lệ chốt đơn', value: '12.5%', trend: '-2%', isUp: false, icon: 'done_all' },
-            { label: 'AI Tương tác', value: '1,280', trend: '+24%', isUp: true, icon: 'forum' }
-          ].map((card, i) => (
+          {metricCards.map((card, i) => (
             <div key={i} className="bg-surface-container-high rounded-xl p-5 border border-outline-variant shadow-lg flex items-center gap-4">
               <div className="w-12 h-12 rounded-xl bg-surface-variant flex items-center justify-center text-primary shrink-0">
                 <span className="material-symbols-outlined text-[24px]">{card.icon}</span>
@@ -146,10 +236,15 @@ export default function Analytics() {
                 <p className="text-xs font-bold text-on-surface-variant uppercase tracking-wider mb-1">{card.label}</p>
                 <div className="flex items-end gap-2">
                   <h4 className="text-xl font-black text-on-surface">{card.value}</h4>
-                  <span className={clsx("text-xs font-bold mb-0.5", card.isUp ? "text-green-400" : "text-error")}>
-                    {card.trend}
-                  </span>
+                  {card.trend && (
+                    <span className={clsx("text-xs font-bold mb-0.5", card.trend.isUp ? "text-green-400" : "text-error")}>
+                      {card.trend.text}
+                    </span>
+                  )}
                 </div>
+                {card.hint && (
+                  <p className="text-[11px] text-on-surface-variant/70 mt-0.5">{card.hint}</p>
+                )}
               </div>
             </div>
           ))}
@@ -161,6 +256,12 @@ export default function Analytics() {
           <div className="bg-surface-container rounded-xl border border-outline-variant p-6 shadow-lg lg:col-span-2">
             <h3 className="font-headline-sm text-lg font-bold text-on-surface mb-6">Biểu đồ doanh thu</h3>
             <div className="h-[300px] w-full">
+              {stats.revenue === 0 && stats.ordersCount === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-center gap-2">
+                  <span className="material-symbols-outlined text-[40px] text-on-surface-variant/40">show_chart</span>
+                  <p className="text-sm text-on-surface-variant">Chưa có doanh thu trong kỳ này</p>
+                </div>
+              ) : (
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={performanceData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                   <defs>
@@ -181,6 +282,7 @@ export default function Analytics() {
                   <Area type="monotone" dataKey="revenue" stroke="#00e5ff" strokeWidth={3} fillOpacity={1} fill="url(#colorRevenue)" />
                 </AreaChart>
               </ResponsiveContainer>
+              )}
             </div>
           </div>
 
@@ -188,6 +290,12 @@ export default function Analytics() {
           <div className="bg-surface-container rounded-xl border border-outline-variant p-6 shadow-lg flex flex-col">
             <h3 className="font-headline-sm text-lg font-bold text-on-surface mb-6">Nguồn khách hàng</h3>
             <div className="h-[300px] w-full flex-1">
+              {trafficSourceData.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-center gap-2">
+                  <span className="material-symbols-outlined text-[40px] text-on-surface-variant/40">pie_chart</span>
+                  <p className="text-sm text-on-surface-variant">Chưa có khách hàng nào</p>
+                </div>
+              ) : (
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
@@ -211,6 +319,7 @@ export default function Analytics() {
                   <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '12px' }} />
                 </PieChart>
               </ResponsiveContainer>
+              )}
             </div>
           </div>
         </div>
