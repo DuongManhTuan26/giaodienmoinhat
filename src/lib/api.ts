@@ -397,6 +397,56 @@ export const api = {
     remove: (id: number) => del<{ success: boolean }>(`/posts/${id}`),
   },
 
+  settings: {
+    autoScripts: () => get<{ data: any[] }>("/settings/auto-scripts"),
+    createAutoScript: (payload: Record<string, unknown>) =>
+      post<{ data: any }>("/settings/auto-scripts", payload),
+    updateAutoScript: (id: number, payload: Record<string, unknown>) =>
+      patch<{ data: any }>(`/settings/auto-scripts/${id}`, payload),
+    removeAutoScript: (id: number) =>
+      del<{ success: boolean }>(`/settings/auto-scripts/${id}`),
+
+    telegram: () =>
+      get<{
+        data: {
+          hasToken: boolean;
+          chatId: string;
+          enabled: boolean;
+          events: Record<string, boolean>;
+          verifiedAt: string | null;
+          logs: Array<{
+            id: number;
+            kind: string;
+            content: string;
+            status: string;
+            error: string | null;
+            created_at: string;
+          }>;
+        };
+      }>("/settings/telegram"),
+    saveTelegram: (payload: {
+      botToken?: string;
+      chatId?: string;
+      enabled: boolean;
+      events?: Record<string, boolean>;
+    }) => request<{ data: unknown }>("/settings/telegram", { method: "PUT", body: payload }),
+    testTelegram: () => post<{ message: string }>("/settings/telegram/test"),
+
+    usage: () =>
+      get<{
+        data: {
+          plan: string;
+          usage: {
+            connected_accounts: number;
+            ai_messages_month: number;
+            tokens_month: number;
+            orders_month: number;
+            posts_month: number;
+          };
+        };
+      }>("/settings/usage"),
+  },
+
   ads: {
     overview: (range = "last_7d") =>
       get<{
