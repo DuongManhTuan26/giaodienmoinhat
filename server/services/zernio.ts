@@ -417,27 +417,47 @@ export async function listComments(params: {
   return data.data ?? [];
 }
 
+/**
+ * Trả lời công khai dưới một bình luận.
+ *
+ * CẢNH BÁO VỀ ĐƯỜNG DẪN: phải dùng POST /inbox/comments/{postId} kèm commentId
+ * trong thân request. Bản trước dùng PATCH /inbox/comments/{postId}/{commentId}
+ * — đó là endpoint SỬA bình luận, và Zernio chỉ hỗ trợ sửa trên Reddit. Trên
+ * Facebook nó luôn trả lỗi "Editing comments is supported for: reddit".
+ * Vì vậy trước đây không một bình luận nào được trả lời.
+ *
+ * Bỏ commentId thì bình luận mới nằm thẳng dưới bài, không phải trả lời ai.
+ */
 export async function replyToComment(params: {
   postId: string;
   commentId: string;
   accountId: string;
   text: string;
-}): Promise<unknown> {
-  return request(
-    `/inbox/comments/${encodeURIComponent(params.postId)}/${encodeURIComponent(
-      params.commentId
-    )}`,
-    {
-      method: "PATCH",
-      body: { accountId: params.accountId, text: params.text },
-      retries: 0,
-    }
-  );
+}): Promise<{ success?: boolean; data?: { commentId?: string; isReply?: boolean } }> {
+  return request(`/inbox/comments/${encodeURIComponent(params.postId)}`, {
+    method: "POST",
+    body: {
+      accountId: params.accountId,
+      message: params.text,
+      commentId: params.commentId,
+    },
+    retries: 0,
+  });
 }
 
 /**
  * Trả lời một bình luận bằng tin nhắn riêng.
  * Đây chính là bước "khách bình luận thì AI chủ động nhắn tin" trong mô hình.
+ */
+/**
+ * Nhắn tin riêng cho người vừa bình luận.
+ *
+ * Trường nội dung là `message`, không phải `text` — gửi `text` bị từ chối vì
+ * thiếu trường bắt buộc.
+ *
+ * Chỉ hỗ trợ Instagram và Facebook. Theo tài liệu: MỘT lần cho mỗi bình luận,
+ * và phải gửi trong 7 ngày. Hai điều kiện này được chốt chặn ở tầng
+ * guardrails và bằng khoá duy nhất trong bảng comments.
  */
 export async function privateReplyToComment(params: {
   postId: string;
@@ -451,7 +471,7 @@ export async function privateReplyToComment(params: {
     )}/private-reply`,
     {
       method: "POST",
-      body: { accountId: params.accountId, text: params.text },
+      body: { accountId: params.accountId, message: params.text },
       retries: 0,
     }
   );
