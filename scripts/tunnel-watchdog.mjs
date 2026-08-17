@@ -72,6 +72,85 @@ async function updateZernioWebhook(url) {
       ? `Đã trỏ webhook Zernio sang ${url}`
       : `Cập nhật webhook thất bại: HTTP ${response.status}`
   );
+
+  // Bắt buộc: gỡ trạng thái ngắt của Zernio sau khi đổi URL.
+  await clearSuppression();
+}
+
+/**
+ * Gỡ trạng thái "Delivery suppressed" của Zernio.
+ *
+ * ĐÂY LÀ ĐIỂM QUAN TRỌNG NHẤT của script này.
+ *
+ * Zernio có cơ chế tự ngắt: khi endpoint thất bại liên tục, họ NGỪNG GỬI hẳn
+ * và ghi "Delivery suppressed: endpoint has been failing continuously". Sửa
+ * tunnel xong thì webhook vẫn không về, vì trạng thái ngắt còn nguyên.
+ *
+ * Đã quan sát trên nhật ký thật ngày 17/08/2026: tunnel chết lúc 10:01, Zernio
+ * trả HTTP 530 nhiều lần rồi chuyển sang suppressed. Tin nhắn và bình luận của
+ * khách trong hơn 3 giờ sau đó bị bỏ hoàn toàn — kể cả sau khi tunnel đã sống
+ * lại. Chỉ một lời gọi POST /webhooks/test thành công mới xoá trạng thái này.
+ */
+async function clearSuppression() {
+  const key = process.env.ZERNIO_API_KEY;
+  const base = process.env.ZERNIO_API_BASE_URL ?? "https://zernio.com/api/v1";
+  const headers = { Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
+
+  try {
+    const list = await (await fetch(`${base}/webhooks/settings`, { headers })).json();
+    const id = list.webhooks?.[0]?._id;
+    if (!id) return;
+
+    // POST /webhooks/test BẮT BUỘC có webhookId trong body; thiếu thì trả 400.
+    const response = await fetch(`${base}/webhooks/test`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ webhookId: id }),
+    });
+    if (!response.ok) {
+      log(`Gọi test webhook thất bại: HTTP ${response.status}`);
+      return;
+    }
+
+    const after = await (await fetch(`${base}/webhooks/settings`, { headers })).json();
+    const hook = after.webhooks?.[0];
+    const suppressed = Boolean(hook?.attemptFailingSince);
+
+    log(
+      suppressed
+        ? "⚠️  Zernio VẪN đang ngắt gửi — cần kiểm tra thủ công"
+        : "Đã gỡ trạng thái ngắt gửi của Zernio, webhook sẵn sàng nhận"
+    );
+  } catch (error) {
+    log(`Không gỡ được trạng thái ngắt: ${error.message}`);
+  }
+}
+
+/**
+ * Kiểm tra Zernio có đang ngắt gửi hay không.
+ *
+ * Tunnel có thể sống mà Zernio vẫn ngắt — hai tình trạng độc lập, phải theo dõi
+ * riêng. Đây chính là lý do lần trước sửa tunnel xong mà tin vẫn không về.
+ */
+async function checkSuppression() {
+  const key = process.env.ZERNIO_API_KEY;
+  const base = process.env.ZERNIO_API_BASE_URL ?? "https://zernio.com/api/v1";
+  const headers = { Authorization: `Bearer ${key}` };
+
+  try {
+    const list = await (await fetch(`${base}/webhooks/settings`, { headers })).json();
+    const hook = list.webhooks?.[0];
+    if (!hook) return;
+
+    if (hook.attemptFailingSince) {
+      log(
+        `Zernio đang ngắt gửi (thất bại từ ${new Date(hook.attemptFailingSince).toLocaleTimeString("vi-VN")}) — đang gỡ`
+      );
+      await clearSuppression();
+    }
+  } catch {
+    /* lỗi mạng tạm thời, để nhịp sau xét lại */
+  }
 }
 
 /** Dựng tunnel mới và đọc URL từ log của cloudflared. */
@@ -140,14 +219,20 @@ async function main() {
 
   setInterval(async () => {
     const healthy = currentUrl ? await tunnelHealthy(currentUrl) : false;
-    if (healthy) return;
 
-    log("Tunnel không phản hồi — đang dựng lại");
-    try {
-      await rotate();
-    } catch (error) {
-      log(`Dựng lại thất bại: ${error.message}. Sẽ thử lại ở nhịp sau.`);
+    if (!healthy) {
+      log("Tunnel không phản hồi — đang dựng lại");
+      try {
+        await rotate();
+      } catch (error) {
+        log(`Dựng lại thất bại: ${error.message}. Sẽ thử lại ở nhịp sau.`);
+      }
+      return;
     }
+
+    // Tunnel sống vẫn phải xét riêng trạng thái ngắt của Zernio: hai tình
+    // trạng độc lập, và ngắt không tự hết khi tunnel hồi phục.
+    await checkSuppression();
   }, CHECK_INTERVAL_MS);
 }
 
