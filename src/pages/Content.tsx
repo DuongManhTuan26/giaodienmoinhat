@@ -363,11 +363,11 @@ export default function Content() {
                   {(post.scheduled_for ? `Đăng lúc: ${new Date(post.scheduled_for).toLocaleTimeString('vi-VN')} ${new Date(post.scheduled_for).toLocaleDateString('vi-VN')}` : 'Chưa đặt lịch')}
                 </div>
 
-                {post.status === 'Đã đăng' && null && (
+                {post.status === 'published' && post.stats && (
                   <div className="flex items-center gap-4 text-xs font-bold text-on-surface pt-3 border-t border-outline-variant/50">
-                    <span className="flex items-center gap-1"><span className="material-symbols-outlined text-[16px] text-primary">thumb_up</span> {null.likes}</span>
-                    <span className="flex items-center gap-1"><span className="material-symbols-outlined text-[16px] text-primary">chat_bubble</span> {null.comments}</span>
-                    <span className="flex items-center gap-1"><span className="material-symbols-outlined text-[16px] text-primary">share</span> {null.shares}</span>
+                    <span className="flex items-center gap-1"><span className="material-symbols-outlined text-[16px] text-primary">thumb_up</span> {post.stats.likes ?? 0}</span>
+                    <span className="flex items-center gap-1"><span className="material-symbols-outlined text-[16px] text-primary">chat_bubble</span> {post.stats.comments ?? 0}</span>
+                    <span className="flex items-center gap-1"><span className="material-symbols-outlined text-[16px] text-primary">share</span> {post.stats.shares ?? 0}</span>
                   </div>
                 )}
               </div>

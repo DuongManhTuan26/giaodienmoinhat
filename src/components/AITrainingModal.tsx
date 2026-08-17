@@ -14,6 +14,26 @@ interface UploadedFile {
   size: string;
 }
 
+/**
+ * Duyệt FileList theo chỉ số thay vì Array.from.
+ * @types/node khai báo một kiểu File toàn cục khác với File của trình duyệt,
+ * khiến Array.from(FileList) bị suy ra thành unknown khi hai kiểu này cùng tồn tại.
+ */
+function toFileArray(list: FileList): File[] {
+  const files: File[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const file = list.item(i);
+    if (file) files.push(file);
+  }
+  return files;
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export default function AITrainingModal({ isOpen, onClose, aiName }: AITrainingModalProps) {
   const [role, setRole] = useState('');
   const [files, setFiles] = useState<UploadedFile[]>([
@@ -28,11 +48,11 @@ export default function AITrainingModal({ isOpen, onClose, aiName }: AITrainingM
     const selectedFiles = e.target.files;
     if (!selectedFiles || selectedFiles.length === 0) return;
 
-    const newFiles: UploadedFile[] = Array.from(selectedFiles).map((file, index) => ({
+    const newFiles: UploadedFile[] = toFileArray(selectedFiles).map((file, index) => ({
       id: Date.now().toString() + index,
       name: file.name,
       type: type,
-      size: (file.size / (1024 * 1024)).toFixed(1) + ' MB'
+      size: formatSize(file.size)
     }));
 
     setFiles(prev => [...prev, ...newFiles]);
@@ -57,7 +77,7 @@ export default function AITrainingModal({ isOpen, onClose, aiName }: AITrainingM
     const selectedFiles = e.target.files;
     if (!selectedFiles || selectedFiles.length === 0) return;
 
-    const newFiles: UploadedFile[] = Array.from(selectedFiles).map((file, index) => {
+    const newFiles: UploadedFile[] = toFileArray(selectedFiles).map((file, index) => {
       let fileType: 'text' | 'image' | 'video' = 'text';
       if (file.type.startsWith('image/')) fileType = 'image';
       else if (file.type.startsWith('video/')) fileType = 'video';
@@ -66,7 +86,7 @@ export default function AITrainingModal({ isOpen, onClose, aiName }: AITrainingM
         id: Date.now().toString() + index,
         name: file.name,
         type: fileType,
-        size: (file.size / (1024 * 1024)).toFixed(1) + ' MB'
+        size: formatSize(file.size)
       };
     });
 
