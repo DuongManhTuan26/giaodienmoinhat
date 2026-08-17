@@ -1,4 +1,5 @@
 import { query, queryOne } from "../db.js";
+import { getRateLimitState } from "./zernio.js";
 
 /**
  * Hàng rào an toàn theo chính sách nền tảng.
@@ -36,14 +37,21 @@ const HUMAN_AGENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1_000;
 export const COMMENT_REPLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1_000;
 
 /**
- * Trần tuyệt đối cho số tin mỗi phút.
+ * Trần theo bậc chính sách của Zernio, phụ thuộc số tài khoản kết nối của
+ * cả team. Đây là con số CHÍNH SÁCH, không phải phỏng đoán:
+ *   0–2 tài khoản     -> 60 request/phút
+ *   3–2.000 tài khoản -> 600
+ *   trên 2.000        -> 1.200
  *
- * Zernio cho 60 request/phút ở bậc thấp nhất, và mỗi lần gửi tin còn kéo theo
- * các lời gọi khác (đọc hội thoại, đồng bộ). Nên trần ở đây đặt 40 để luôn còn
- * chỗ cho phần còn lại của hệ thống, kể cả khi chủ shop cố nới lên cao hơn.
+ * Hệ thống ưu tiên dùng hạn mức SỐNG mà Zernio báo về qua header
+ * x-ratelimit-limit; bảng này chỉ là phương án dự phòng khi chưa có header
+ * nào được đọc (ví dụ ngay sau khi khởi động).
  */
-const HARD_MAX_PER_MINUTE = 40;
-const HARD_MAX_AI_PER_HOUR = 500;
+function policyLimitPerMinute(connectedAccounts: number): number {
+  if (connectedAccounts <= 2) return 60;
+  if (connectedAccounts <= 2_000) return 600;
+  return 1_200;
+}
 
 export type Actor = "ai" | "human" | "system";
 
@@ -85,8 +93,10 @@ const DEFAULT_CONFIG: GuardrailConfig = {
   disclosure_enabled: true,
   disclosure_text:
     'Em là trợ lý tự động của shop, nếu cần gặp nhân viên anh/chị nhắn "gặp người thật" giúp em nhé.',
-  max_sends_per_minute: 20,
-  max_ai_sends_per_hour: 200,
+  // Bằng đúng hạn mức bậc thấp nhất của chính sách Zernio, không hạ thấp.
+  max_sends_per_minute: 60,
+  // 0 = không giới hạn. Đây không phải chính sách nền tảng.
+  max_ai_sends_per_hour: 0,
   auto_pause_enabled: true,
   failure_rate_threshold: 30,
   failure_min_samples: 10,
@@ -104,41 +114,81 @@ async function loadConfig(userId: number): Promise<GuardrailConfig> {
   return row ?? DEFAULT_CONFIG;
 }
 
-/** Kẹp giá trị người dùng đặt vào khoảng an toàn tuyệt đối. */
-export function clampConfig(input: Partial<GuardrailConfig>): Partial<GuardrailConfig> {
+/**
+ * Chuẩn hoá giá trị người dùng đặt.
+ *
+ * KHÔNG hạ trần xuống dưới mức chính sách cho phép. Hệ thống chỉ chặn những
+ * giá trị vô nghĩa (số âm, số không phải nguyên) và chặn đúng ngưỡng chính sách
+ * thật của Zernio — không thấp hơn một đơn vị nào, vì hạ thấp là bỏ phí năng
+ * lực gửi mà nền tảng đã cho phép.
+ *
+ * Riêng trần tin/phút bị kẹp theo hạn mức THẬT của Zernio: đặt cao hơn hạn mức
+ * đó không giúp gửi được nhiều hơn, chỉ dẫn tới lỗi 429.
+ */
+export function clampConfig(
+  input: Partial<GuardrailConfig>,
+  policyMaxPerMinute: number
+): Partial<GuardrailConfig> {
   const clamped: Partial<GuardrailConfig> = { ...input };
+
   if (input.max_sends_per_minute !== undefined) {
     clamped.max_sends_per_minute = Math.min(
       Math.max(1, Math.floor(input.max_sends_per_minute)),
-      HARD_MAX_PER_MINUTE
+      policyMaxPerMinute
     );
   }
+
+  // Trần tin AI mỗi giờ KHÔNG phải chính sách nền tảng, chỉ là công tắc an toàn
+  // tuỳ chọn chống phát tán khi có sự cố. 0 nghĩa là không giới hạn.
   if (input.max_ai_sends_per_hour !== undefined) {
-    clamped.max_ai_sends_per_hour = Math.min(
-      Math.max(1, Math.floor(input.max_ai_sends_per_hour)),
-      HARD_MAX_AI_PER_HOUR
-    );
+    clamped.max_ai_sends_per_hour = Math.max(0, Math.floor(input.max_ai_sends_per_hour));
   }
+
+  // Ngưỡng và thời lượng ngắt là lựa chọn vận hành của chủ shop, không phải
+  // chính sách nền tảng — chỉ chặn giá trị vô nghĩa.
   if (input.failure_rate_threshold !== undefined) {
-    // Dưới 5% là quá nhạy, trên 60% là quá muộn để cứu Trang.
     clamped.failure_rate_threshold = Math.min(
-      Math.max(5, Math.floor(input.failure_rate_threshold)),
-      60
+      Math.max(1, Math.floor(input.failure_rate_threshold)),
+      100
     );
   }
   if (input.auto_pause_minutes !== undefined) {
-    clamped.auto_pause_minutes = Math.min(
-      Math.max(5, Math.floor(input.auto_pause_minutes)),
-      24 * 60
-    );
+    clamped.auto_pause_minutes = Math.max(1, Math.floor(input.auto_pause_minutes));
   }
   if (input.failure_min_samples !== undefined) {
-    clamped.failure_min_samples = Math.min(
-      Math.max(3, Math.floor(input.failure_min_samples)),
-      200
-    );
+    clamped.failure_min_samples = Math.max(1, Math.floor(input.failure_min_samples));
   }
+
   return clamped;
+}
+
+/** Hạn mức tin/phút được phép, ưu tiên số sống do Zernio báo về. */
+export async function effectiveRateLimit(userId: number): Promise<{
+  perMinute: number;
+  source: "live" | "policy";
+  remaining: number | null;
+  resetAt: Date | null;
+}> {
+  const live = getRateLimitState();
+  if (live.limit !== null) {
+    return {
+      perMinute: live.limit,
+      source: "live",
+      remaining: live.remaining,
+      resetAt: live.resetAt,
+    };
+  }
+
+  const row = await queryOne<{ n: number }>(
+    "SELECT COUNT(*)::int AS n FROM social_accounts WHERE user_id = $1 AND connected = TRUE",
+    [userId]
+  );
+  return {
+    perMinute: policyLimitPerMinute(row?.n ?? 0),
+    source: "policy",
+    remaining: null,
+    resetAt: null,
+  };
 }
 
 /**
@@ -237,7 +287,29 @@ export async function checkOutbound(params: {
 
   // ── HÀNG RÀO 5: giới hạn tốc độ ───────────────────────────────────────
   if (!params.skipRateLimit) {
-    const perMinuteCap = Math.min(config.max_sends_per_minute, HARD_MAX_PER_MINUTE);
+    /*
+     * Trần tin/phút lấy đúng hạn mức Zernio cho phép, không tự hạ thấp.
+     * Ưu tiên con số SỐNG từ header x-ratelimit-limit; chưa có header thì dùng
+     * bậc chính sách theo số tài khoản kết nối.
+     */
+    const policy = await effectiveRateLimit(conversation.user_id);
+    const perMinuteCap = Math.min(config.max_sends_per_minute, policy.perMinute);
+
+    // Zernio còn báo chính xác còn lại bao nhiêu. Hết hạn mức thật thì chặn
+    // ngay kèm mốc nạp lại, thay vì gửi để nhận 429 và mất tin.
+    if (policy.source === "live" && policy.remaining !== null && policy.remaining <= 0) {
+      const waitSeconds = policy.resetAt
+        ? Math.max(1, Math.ceil((policy.resetAt.getTime() - Date.now()) / 1_000))
+        : 60;
+      return {
+        allowed: false,
+        reason: "rate_limited",
+        message:
+          `Đã dùng hết hạn mức ${policy.perMinute} request/phút của Zernio. ` +
+          `Nạp lại sau ${waitSeconds} giây.`,
+        retryAfterSeconds: waitSeconds,
+      };
+    }
     const recent = await queryOne<{ n: number }>(
       `SELECT COUNT(*)::int AS n FROM send_attempts
         WHERE user_id = $1 AND decision = 'allowed'
@@ -256,8 +328,10 @@ export async function checkOutbound(params: {
       };
     }
 
-    if (params.actor === "ai") {
-      const hourlyCap = Math.min(config.max_ai_sends_per_hour, HARD_MAX_AI_PER_HOUR);
+    // Trần tin AI mỗi giờ là công tắc tuỳ chọn của chủ shop, KHÔNG phải chính
+    // sách nền tảng. Đặt 0 nghĩa là không giới hạn.
+    if (params.actor === "ai" && config.max_ai_sends_per_hour > 0) {
+      const hourlyCap = config.max_ai_sends_per_hour;
       const hourly = await queryOne<{ n: number }>(
         `SELECT COUNT(*)::int AS n FROM send_attempts
           WHERE user_id = $1 AND actor = 'ai' AND decision = 'allowed'
@@ -488,11 +562,16 @@ export async function guardrailStatus(userId: number): Promise<Record<string, un
 
   const totalHour = usage?.total_last_hour ?? 0;
 
+  const policy = await effectiveRateLimit(userId);
+
   return {
-    config: {
-      ...config,
-      hardMaxPerMinute: HARD_MAX_PER_MINUTE,
-      hardMaxAiPerHour: HARD_MAX_AI_PER_HOUR,
+    config,
+    // Hạn mức thật của nền tảng, để giao diện hiện đúng con số được phép dùng.
+    rateLimit: {
+      perMinute: policy.perMinute,
+      source: policy.source,
+      remaining: policy.remaining,
+      resetAt: policy.resetAt,
     },
     usage: {
       sentLastMinute: usage?.last_minute ?? 0,

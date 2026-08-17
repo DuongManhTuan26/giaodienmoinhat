@@ -75,6 +75,9 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       throw lastError;
     }
 
+    // Ghi nhận hạn mức thật từ mọi phản hồi, kể cả phản hồi lỗi.
+    captureRateLimit(response);
+
     const text = await response.text();
 
     if (response.ok) {
@@ -122,6 +125,64 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 function backoffMs(attempt: number): number {
   // 500ms, 1s, 2s… kèm nhiễu ngẫu nhiên để tránh dồn cục khi nhiều tiến trình cùng thử lại.
   return Math.round(500 * 2 ** attempt * (0.75 + Math.random() * 0.5));
+}
+
+// ---------------------------------------------------------------------------
+// Hạn mức thật do Zernio báo về
+// ---------------------------------------------------------------------------
+
+/**
+ * Hạn mức sống, đọc từ header của mỗi phản hồi Zernio.
+ *
+ * Đây là con số THẬT, không phải phỏng đoán. Zernio trả về:
+ *   x-ratelimit-limit     — trần của bậc hiện tại (60 / 600 / 1200 tuỳ số
+ *                           tài khoản kết nối trong cả team)
+ *   x-ratelimit-remaining — còn lại bao nhiêu trong cửa sổ hiện tại
+ *   x-ratelimit-reset     — mốc unix khi hạn mức được nạp lại
+ *
+ * Dùng con số này để chặn đúng lúc hết hạn mức, thay vì tự đặt một trần thấp
+ * hơn rồi bỏ phí phần dung lượng còn được phép dùng.
+ */
+export interface RateLimitState {
+  limit: number | null;
+  remaining: number | null;
+  /** Mốc nạp lại hạn mức. */
+  resetAt: Date | null;
+  /** Lần cuối đọc được header, để biết số liệu còn mới hay đã cũ. */
+  observedAt: Date | null;
+}
+
+let rateLimitState: RateLimitState = {
+  limit: null,
+  remaining: null,
+  resetAt: null,
+  observedAt: null,
+};
+
+function captureRateLimit(response: Response): void {
+  const limit = Number(response.headers.get("x-ratelimit-limit"));
+  const remaining = Number(response.headers.get("x-ratelimit-remaining"));
+  const reset = Number(response.headers.get("x-ratelimit-reset"));
+
+  if (!Number.isFinite(limit)) return;
+
+  rateLimitState = {
+    limit,
+    remaining: Number.isFinite(remaining) ? remaining : null,
+    resetAt: Number.isFinite(reset) ? new Date(reset * 1_000) : null,
+    observedAt: new Date(),
+  };
+}
+
+export function getRateLimitState(): RateLimitState {
+  // Đã qua mốc nạp lại thì hạn mức coi như đầy trở lại.
+  if (rateLimitState.resetAt && rateLimitState.resetAt.getTime() <= Date.now()) {
+    return {
+      ...rateLimitState,
+      remaining: rateLimitState.limit,
+    };
+  }
+  return rateLimitState;
 }
 
 function sleep(ms: number): Promise<void> {

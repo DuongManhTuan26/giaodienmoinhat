@@ -8,6 +8,7 @@ import {
   guardrailStatus,
   clampConfig,
   resumeAi,
+  effectiveRateLimit,
 } from "../services/guardrails.js";
 
 export const settingsRouter = Router();
@@ -424,13 +425,15 @@ settingsRouter.put(
   "/guardrails",
   route(async (req, res) => {
     const body = req.body ?? {};
+    // Trần theo hạn mức THẬT của Zernio, không phải con số tự đặt.
+    const policy = await effectiveRateLimit(req.user!.id);
     const clamped = clampConfig({
       max_sends_per_minute: body.maxSendsPerMinute,
       max_ai_sends_per_hour: body.maxAiSendsPerHour,
       failure_rate_threshold: body.failureRateThreshold,
       failure_min_samples: body.failureMinSamples,
       auto_pause_minutes: body.autoPauseMinutes,
-    });
+    }, policy.perMinute);
 
     const updated = await queryOne(
       `INSERT INTO guardrail_configs
@@ -438,7 +441,7 @@ settingsRouter.put(
           max_ai_sends_per_hour, auto_pause_enabled, failure_rate_threshold,
           failure_min_samples, auto_pause_minutes)
        VALUES ($1,$2,$3,
-               COALESCE($4, 20), COALESCE($5, 200), $6,
+               COALESCE($4, 60), COALESCE($5, 0), $6,
                COALESCE($7, 30), COALESCE($8, 10), COALESCE($9, 60))
        ON CONFLICT (user_id) DO UPDATE SET
          disclosure_enabled     = EXCLUDED.disclosure_enabled,
