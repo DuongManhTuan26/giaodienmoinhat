@@ -286,6 +286,21 @@ export async function getConversation(
   };
 }
 
+/**
+ * Gửi tin nhắn vào một hội thoại.
+ *
+ * CẢNH BÁO VỀ TÀI LIỆU: ví dụ trong tài liệu Zernio ghi thân request là
+ * `{ text }` và không có accountId. Thực tế API từ chối dạng đó. Thăm dò trực
+ * tiếp ngày 17/08/2026 cho kết quả:
+ *   { text }               -> 400, báo thiếu accountId
+ *   { accountId, text }    -> 400, báo thiếu message
+ *   { accountId, message } -> qua được kiểm tra, chạm tới nền tảng
+ * Nên hợp đồng thật là { accountId, message }. Viết theo tài liệu thì AI sẽ
+ * không bao giờ gửi được tin nào cho khách.
+ *
+ * Phản hồi HTTP nghĩa là ĐÃ NHẬN, chưa phải ĐÃ GỬI TỚI KHÁCH. Trạng thái thật
+ * đến sau qua webhook message.sent hoặc message.failed.
+ */
 export async function sendMessage(params: {
   conversationId: string;
   accountId: string;
@@ -295,7 +310,7 @@ export async function sendMessage(params: {
     `/inbox/conversations/${encodeURIComponent(params.conversationId)}/messages`,
     {
       method: "POST",
-      body: { accountId: params.accountId, text: params.text },
+      body: { accountId: params.accountId, message: params.text },
       // Không thử lại khi gửi tin: lần thử thứ hai có thể khiến khách nhận hai tin.
       retries: 0,
     }

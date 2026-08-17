@@ -1,4 +1,5 @@
 import { query, queryOne, transaction } from "../db.js";
+import { handleIncomingMessage } from "./sales-ai.js";
 
 /**
  * Chuyển sự kiện webhook thành dữ liệu nghiệp vụ.
@@ -183,7 +184,25 @@ async function handleMessageReceived(event: WebhookEvent): Promise<void> {
       `(${platform}): "${text.slice(0, 60)}"`
   );
 
-  // Bước kế tiếp — để AI đọc và trả lời — sẽ nối vào đây ở giai đoạn 3.
+  // Để AI đọc và trả lời. Lỗi ở bước này không được làm sự kiện thất bại:
+  // tin nhắn đã lưu an toàn rồi, thử lại sẽ gửi trùng cho khách.
+  try {
+    await handleIncomingMessage(message.conversationId);
+  } catch (error) {
+    console.error(
+      `[sự kiện] AI không xử lý được hội thoại ${message.conversationId}:`,
+      error instanceof Error ? error.message : error
+    );
+    // Không để khách chờ mãi: chuyển cho nhân viên xử lý.
+    await query(
+      `UPDATE conversations
+          SET status = 'waiting_human', ai_enabled = FALSE,
+              handoff_reason = COALESCE(handoff_reason, 'AI gặp lỗi, cần người xử lý'),
+              handoff_at = COALESCE(handoff_at, now()), updated_at = now()
+        WHERE id = $1 AND status = 'ai'`,
+      [message.conversationId]
+    ).catch(() => {});
+  }
 }
 
 /** Tin do shop gửi đi (kể cả gửi từ ứng dụng khác) — ghi lại để lịch sử đầy đủ. */
