@@ -22,6 +22,7 @@ import { anDiaChiKho, hoanDiaChiKho, laDiaChiKho } from "../server/services/medi
 import { laNguonAnhCuaNenTang } from "../server/services/vision.js";
 import { giaCoTrongChu, laySoDau } from "../server/services/sales-ai.js";
 import { gopVaoTongChi } from "../server/services/orders.js";
+import { docSoLieuQuangCao } from "../src/pages/Ads.js";
 import { MAU_PHONG_CACH } from "../src/lib/phong-cach-anh.js";
 import {
   gioiHanChatNhat,
@@ -1777,6 +1778,83 @@ kiem("điện thoại", "hộp thư: cột hồ sơ khách chỉ hiện khi đ�
 const nguonKetNoi2 = fs.readFileSync(path.join(GOC, "src/pages/Connections.tsx"), "utf8");
 kiem("nói đúng sự thật", "không hứa hạn mức theo gói khi máy chủ chưa chặn theo gói",
   /Gói của bạn (còn|đã hết)/.test(boChuThich(nguonKetNoi2)), false);
+
+// ---------------------------------------------------------------------------
+// 42. Trang Quảng cáo không được bịa số
+//
+// Tái hiện: tài khoản CHƯA nối kênh quảng cáo nào, không có chiến dịch nào,
+// mà trang vẫn hiện huy hiệu "4 CHIẾN DỊCH ĐANG CHẠY", "TỔNG CHI TIÊU
+// 12.450.000 đ", "LƯỢT TIẾP CẬN 1.2 triệu", "BÌNH LUẬN THU ĐƯỢC 842", "ĐƠN
+// CHỐT TỪ QUẢNG CÁO 47" — trong khi bảng ngay dưới ghi đúng "Không có chiến
+// dịch nào".
+//
+// CHƯA KIỂM ĐƯỢC BẰNG SỐ THẬT: tài khoản quảng cáo act_1357505662010463 có
+// thật và gọi được, nhưng đang 0 chiến dịch nên nhà cung cấp trả data rỗng.
+// Đường có số khác 0 mới chỉ kiểm bằng bản ghi dựng theo đúng dạng của Meta,
+// chưa đối chiếu với một chiến dịch chạy thật.
+// ---------------------------------------------------------------------------
+kiem("trang quảng cáo", "chưa có số liệu thì trả null, không trả 0",
+  docSoLieuQuangCao({ objectId: "act_1", data: [], paging: {} }), null);
+kiem("trang quảng cáo", "không có gì cũng không vỡ",
+  docSoLieuQuangCao(null), null);
+{
+  const dong = {
+    spend: "1250000",
+    reach: "48211",
+    actions: [
+      { action_type: "comment", value: "842" },
+      { action_type: "onsite_conversion.messaging_conversation_started_7d", value: "784" },
+      { action_type: "post_reaction", value: "9021" },
+    ],
+  };
+  kiem("trang quảng cáo", "bóc đúng số đã chi",
+    docSoLieuQuangCao({ data: [dong] })?.daChi, 1_250_000);
+  kiem("trang quảng cáo", "bóc đúng lượt tiếp cận",
+    docSoLieuQuangCao({ data: [dong] })?.tiepCan, 48_211);
+  kiem("trang quảng cáo", "bóc đúng số bình luận trong đống actions",
+    docSoLieuQuangCao({ data: [dong] })?.binhLuan, 842);
+  kiem("trang quảng cáo", "bóc đúng số người nhắn tin từ quảng cáo",
+    docSoLieuQuangCao({ data: [dong] })?.nhanTin, 784);
+}
+kiem("trang quảng cáo", "thiếu trường thì trả null chứ KHÔNG trả 0",
+  docSoLieuQuangCao({ data: [{ spend: "5000" }] }),
+  { daChi: 5000, tiepCan: null, binhLuan: null, nhanTin: null });
+kiem("trang quảng cáo", "actions không phải mảng cũng không vỡ",
+  docSoLieuQuangCao({ data: [{ spend: "1", actions: "hỏng" }] })?.binhLuan, null);
+/*
+ * Phải hỏi thẳng "có phải NaN không", đừng so bằng JSON.
+ *
+ * JSON.stringify(NaN) ra "null" — nên bản đầu của phép kiểm này vẫn xanh khi
+ * tôi đục thủng đúng chỗ chặn NaN. Đã đục và nó lọt.
+ */
+{
+  const rac = docSoLieuQuangCao({ data: [{ spend: "không phải số", reach: "" }] });
+  kiem("trang quảng cáo", "chữ không phải số thì trả null, KHÔNG trả NaN",
+    rac?.daChi === null && !Number.isNaN(rac?.daChi as number), true);
+  kiem("trang quảng cáo", "chuỗi rỗng cũng trả null",
+    rac?.tiepCan === null, true);
+  const racActions = docSoLieuQuangCao({
+    data: [{ actions: [{ action_type: "comment", value: "abc" }] }],
+  });
+  kiem("trang quảng cáo", "giá trị rác trong actions cũng không thành NaN",
+    racActions?.binhLuan === null && !Number.isNaN(racActions?.binhLuan as number), true);
+}
+
+const nguonQC = fs.readFileSync(path.join(GOC, "src/pages/Ads.tsx"), "utf8");
+const maQC = boChuThich(nguonQC);
+for (const bia of ["12.450.000 đ", "1.2 triệu", ">842<", ">47<", "+5,2% so với tháng trước", "264.893"]) {
+  kiem("trang quảng cáo", `không còn số bịa: "${bia}"`, maQC.includes(bia), false);
+}
+kiem("trang quảng cáo", "huy hiệu đầu trang đếm chiến dịch thật",
+  /\$\{soChienDichDangChay\} CHIẾN DỊCH ĐANG CHẠY/.test(maQC) &&
+    !/4 CHIẾN DỊCH ĐANG CHẠY/.test(maQC), true);
+kiem("trang quảng cáo", "chưa nối kênh thì nói thẳng là chưa nối",
+  /CHƯA NỐI TÀI KHOẢN QUẢNG CÁO/.test(maQC), true);
+kiem("trang quảng cáo", "đơn chốt từ quảng cáo: nói chưa đo được thay vì bịa",
+  /Chưa đo được/.test(maQC) && /Cần gắn đơn với chiến dịch mới tính được/.test(maQC), true);
+kiem("trang quảng cáo", "ô chọn kỳ có nối thật và nạp lại theo kỳ",
+  /value=\{ky\}/.test(maQC) && /onChange=\{\(e\) => setKy\(e\.target\.value\)\}/.test(maQC) &&
+    /api\.ads\.overview\(ky\)/.test(maQC) && /\}, \[ky\]\);/.test(maQC), true);
 
 // ---------------------------------------------------------------------------
 console.log(`\nĐã kiểm ${tong} điểm.`);

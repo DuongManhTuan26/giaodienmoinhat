@@ -15,6 +15,49 @@ function statusLabel(metaStatus: string): string {
 }
 
 /** Rút gọn số lớn: 124000 -> 124K. */
+export interface SoLieuQuangCao {
+  daChi: number | null;
+  tiepCan: number | null;
+  binhLuan: number | null;
+  nhanTin: number | null;
+}
+
+/**
+ * Bóc số liệu quảng cáo từ thứ nhà cung cấp trả về.
+ *
+ * Dạng trả về: { objectId, data: [...], paging }. Mỗi dòng trong data là một
+ * bản ghi số liệu của Meta; các loại tương tác gom trong actions dưới dạng
+ * [{ action_type, value }, ...].
+ *
+ * Đọc phòng thủ: thiếu trường thì trả null để giao diện hiện gạch ngang, KHÔNG
+ * trả 0 — vì 0 đọc thành "không tiêu đồng nào", sai theo một kiểu khác.
+ */
+export function docSoLieuQuangCao(
+  insights: Record<string, unknown> | null | undefined
+): SoLieuQuangCao | null {
+  const dong = (insights?.data as Array<Record<string, unknown>> | undefined)?.[0];
+  if (!dong) return null;
+
+  const so = (v: unknown): number | null => {
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const hanhDong = (loai: string): number | null => {
+    const ds = dong.actions as Array<Record<string, unknown>> | undefined;
+    if (!Array.isArray(ds)) return null;
+    const khop = ds.find((a) => String(a.action_type ?? '') === loai);
+    return khop ? so(khop.value) : null;
+  };
+
+  return {
+    daChi: so(dong.spend),
+    tiepCan: so(dong.reach),
+    binhLuan: hanhDong('comment'),
+    nhanTin: hanhDong('onsite_conversion.messaging_conversation_started_7d'),
+  };
+}
+
 function compact(value: number): string {
   if (!Number.isFinite(value)) return '0';
   if (value >= 1_000_000) return (value / 1_000_000).toFixed(1).replace('.0', '') + 'M';
@@ -56,11 +99,24 @@ export default function Ads() {
     hasData: boolean; findings: string; recommendation: string; actions: string[];
   } | null>(null);
 
+  /*
+   * Ô chọn kỳ trước đây là hình vẽ: không có value, không có onChange, và
+   * api.ads.overview() gọi không kèm kỳ nên máy chủ luôn trả 7 ngày. Chọn
+   * "30 ngày qua" không đổi một con số nào.
+   */
+  const KY_SO_LIEU = [
+    { nhan: '7 ngày qua', ma: 'last_7d' },
+    { nhan: '30 ngày qua', ma: 'last_30d' },
+    { nhan: 'Tháng này', ma: 'this_month' },
+  ] as const;
+  const [ky, setKy] = useState<string>('last_7d');
+  const ghiChuKy = KY_SO_LIEU.find((k) => k.ma === ky)?.nhan ?? '';
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const [overview, posts] = await Promise.all([
-        api.ads.overview(),
+        api.ads.overview(ky),
         api.ads.boostablePosts().catch(() => ({ data: [] as Post[] })),
       ]);
       setConnected(overview.data.connected);
@@ -75,7 +131,7 @@ export default function Ads() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [ky]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -376,6 +432,32 @@ export default function Ads() {
   })();
 
   /** Chiến dịch Meta -> hình dạng mà thẻ chiến dịch trên giao diện đang vẽ. */
+  /*
+   * Bốn ô số đầu trang lấy từ số liệu THẬT của tài khoản quảng cáo.
+   *
+   * Trước đây cả bốn là chữ chết trong mã: "TỔNG CHI TIÊU 12.450.000 đ",
+   * "LƯỢT TIẾP CẬN 1.2 triệu", "BÌNH LUẬN THU ĐƯỢC 842", "ĐƠN CHỐT TỪ QUẢNG
+   * CÁO 47", kèm "+5,2% so với tháng trước" và "+12,4%". Đã dựng lại: tài
+   * khoản CHƯA nối kênh quảng cáo nào, không có một chiến dịch nào, mà trang
+   * vẫn hiện nguyên cả bốn con số đó cộng huy hiệu "4 CHIẾN DỊCH ĐANG CHẠY" —
+   * trong khi bảng ngay bên dưới ghi đúng "Không có chiến dịch nào".
+   *
+   * Nhà cung cấp trả về dạng { objectId, data: [...], paging }. Mỗi dòng
+   * trong data là một bản ghi số liệu của Meta. Đọc phòng thủ: thiếu trường
+   * thì hiện gạch ngang chứ KHÔNG hiện số 0, vì 0 đọc thành "không tiêu đồng
+   * nào" — sai theo kiểu khác.
+   */
+  const soLieu = docSoLieuQuangCao(insights);
+
+  const soChienDichDangChay = campaigns.filter((c) => {
+    const tt = String((c as Record<string, unknown>).status ?? '').toUpperCase();
+    return tt === 'ACTIVE';
+  }).length;
+
+  /* Gạch ngang khi chưa đo được, không phải số 0. */
+  const hienSo = (v: number | null | undefined, doi: (n: number) => string) =>
+    v === null || v === undefined ? '—' : doi(v);
+
   const displayCampaigns = campaigns.map((raw) => {
     const c = raw as Record<string, any>;
     const daily = Number(c.dailyBudget ?? c.daily_budget ?? 0);
@@ -464,7 +546,7 @@ export default function Ads() {
           <div className="flex items-center gap-3 mb-2">
             <h1 className="font-headline-sm text-3xl font-bold text-on-surface tracking-tight">AI Quảng Cáo</h1>
             <span className="font-mono text-xs font-bold tracking-wider text-primary bg-primary/10 border border-primary/20 px-2.5 py-1 rounded-full uppercase">
-              4 CHIẾN DỊCH ĐANG CHẠY
+              {connected ? `${soChienDichDangChay} CHIẾN DỊCH ĐANG CHẠY` : 'CHƯA NỐI TÀI KHOẢN QUẢNG CÁO'}
             </span>
           </div>
           <p className="text-on-surface-variant text-sm">Chạy quảng cáo để kéo thêm khách vào bình luận và nhắn tin</p>
@@ -477,10 +559,14 @@ export default function Ads() {
             <span className="material-symbols-outlined text-[18px]">badge</span>
             Vai trò AI
           </button>
-          <select className="bg-surface-container border border-outline-variant rounded-lg px-4 py-2 text-sm text-on-surface font-medium focus:outline-none focus:border-primary">
-            <option>30 ngày qua</option>
-            <option>7 ngày qua</option>
-            <option>Tháng này</option>
+          <select
+            value={ky}
+            onChange={(e) => setKy(e.target.value)}
+            className="bg-surface-container border border-outline-variant rounded-lg px-4 py-2 text-sm text-on-surface font-medium focus:outline-none focus:border-primary"
+          >
+            {KY_SO_LIEU.map((k) => (
+              <option key={k.ma} value={k.ma}>{k.nhan}</option>
+            ))}
           </select>
           <button onClick={openFlow} className="shrink-0 px-4 py-2 bg-primary text-on-primary font-bold rounded-lg shadow-[0_4px_15px_rgba(0,229,255,0.4)] hover:scale-105 transition-transform flex items-center gap-2">
             <span className="material-symbols-outlined text-[18px]">add</span>
@@ -496,13 +582,12 @@ export default function Ads() {
           <div>
             <h3 className="font-mono text-[11px] font-bold tracking-wider text-on-surface-variant uppercase mb-1">TỔNG CHI TIÊU</h3>
             <div className="flex items-baseline gap-2">
-              <span className="font-headline-sm text-3xl font-bold text-on-surface">12.450.000 đ</span>
+              <span className="font-headline-sm text-3xl font-bold text-on-surface">
+                {hienSo(soLieu?.daChi, (n) => formatCurrency(n))}
+              </span>
             </div>
           </div>
-          <div className="flex items-center gap-1.5 text-xs font-bold text-green-400 bg-green-400/10 self-start px-2 py-1 rounded-md mt-auto">
-            <span className="material-symbols-outlined text-[14px]">trending_up</span>
-            +5,2% so với tháng trước
-          </div>
+          <p className="text-xs text-on-surface-variant mt-auto font-medium">{ghiChuKy}</p>
         </div>
 
         <div className="bg-surface-container/30 border border-outline-variant rounded-2xl p-5 relative overflow-hidden flex flex-col justify-between group hover:border-primary/50 transition-colors h-[140px]">
@@ -510,13 +595,12 @@ export default function Ads() {
           <div>
             <h3 className="font-mono text-[11px] font-bold tracking-wider text-on-surface-variant uppercase mb-1">LƯỢT TIẾP CẬN</h3>
             <div className="flex items-baseline gap-2">
-              <span className="font-headline-sm text-3xl font-bold text-on-surface">1.2 triệu</span>
+              <span className="font-headline-sm text-3xl font-bold text-on-surface">
+                {hienSo(soLieu?.tiepCan, (n) => compact(n))}
+              </span>
             </div>
           </div>
-          <div className="flex items-center gap-1.5 text-xs font-bold text-green-400 bg-green-400/10 self-start px-2 py-1 rounded-md mt-auto">
-            <span className="material-symbols-outlined text-[14px]">trending_up</span>
-            +12,4%
-          </div>
+          <p className="text-xs text-on-surface-variant mt-auto font-medium">Số người khác nhau đã thấy quảng cáo</p>
         </div>
 
         <div className="bg-surface-container/30 border border-outline-variant rounded-2xl p-5 relative overflow-hidden flex flex-col justify-between group hover:border-primary/50 transition-colors h-[140px]">
@@ -524,9 +608,15 @@ export default function Ads() {
           <div>
             <h3 className="font-mono text-[11px] font-bold tracking-wider text-on-surface-variant uppercase mb-1">BÌNH LUẬN THU ĐƯỢC</h3>
             <div className="flex items-baseline gap-2">
-              <span className="font-headline-sm text-3xl font-bold text-on-surface">842</span>
+              <span className="font-headline-sm text-3xl font-bold text-on-surface">
+                {hienSo(soLieu?.binhLuan, (n) => n.toLocaleString('vi-VN'))}
+              </span>
             </div>
-            <p className="text-xs text-on-surface-variant mt-1 font-medium">Đã nhắn tin 784 người</p>
+            <p className="text-xs text-on-surface-variant mt-1 font-medium">
+              {soLieu?.nhanTin === null || soLieu?.nhanTin === undefined
+                ? 'Từ các quảng cáo đang chạy'
+                : `${soLieu.nhanTin.toLocaleString('vi-VN')} người nhắn tin từ quảng cáo`}
+            </p>
           </div>
         </div>
 
@@ -536,9 +626,22 @@ export default function Ads() {
           <div>
             <h3 className="font-mono text-[11px] font-bold tracking-wider text-primary uppercase mb-1">ĐƠN CHỐT TỪ QUẢNG CÁO</h3>
             <div className="flex items-baseline gap-2">
-              <span className="font-headline-sm text-3xl font-bold text-on-surface">47</span>
+              {/*
+                * Ô này KHÔNG bịa được cũng không đoán được.
+                *
+                * Muốn biết một đơn đến từ quảng cáo nào thì phải gắn được đơn
+                * với chiến dịch. Hiện chưa có chỗ nào lưu mối nối đó: bảng đơn
+                * chỉ ghi ai chốt (AI hay người), hội thoại không mang mã chiến
+                * dịch. Nên con số 47 và "chi phí 264.893 đ mỗi đơn" trước đây
+                * không phải số sai — mà là số không thể tính ra.
+                *
+                * Nói thẳng là chưa đo được, hơn là hiện 0 cho có.
+                */}
+              <span className="font-headline-sm text-xl font-bold text-on-surface-variant">Chưa đo được</span>
             </div>
-            <p className="text-xs text-on-surface-variant mt-1 font-medium">Chi phí 264.893 đ mỗi đơn</p>
+            <p className="text-xs text-on-surface-variant mt-1 font-medium">
+              Cần gắn đơn với chiến dịch mới tính được
+            </p>
           </div>
         </div>
       </div>

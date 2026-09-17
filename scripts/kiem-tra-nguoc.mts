@@ -815,6 +815,51 @@ const DUC: PhepDuc[] = [
     tim: "Muốn thêm trang nữa thì kết nối thêm một lượt",
     thay: "Gói của bạn đã hết lượt",
   },
+  /*
+   * Trang Quảng cáo.
+   */
+  {
+    ten: "trả lại số bịa 'TỔNG CHI TIÊU 12.450.000 đ'",
+    tep: "src/pages/Ads.tsx",
+    tim: "{hienSo(soLieu?.daChi, (n) => formatCurrency(n))}",
+    thay: "12.450.000 đ",
+  },
+  {
+    ten: "trả lại huy hiệu bịa '4 CHIẾN DỊCH ĐANG CHẠY'",
+    tep: "src/pages/Ads.tsx",
+    tim: "{connected ? `${soChienDichDangChay} CHIẾN DỊCH ĐANG CHẠY` : 'CHƯA NỐI TÀI KHOẢN QUẢNG CÁO'}",
+    thay: "4 CHIẾN DỊCH ĐANG CHẠY",
+  },
+  {
+    ten: "thiếu số liệu thì hiện 0 thay vì gạch ngang",
+    tep: "src/pages/Ads.tsx",
+    tim: "    if (v === null || v === undefined || v === '') return null;",
+    thay: "    if (v === null || v === undefined || v === '') return 0;",
+  },
+  {
+    ten: "bóc nhầm loại tương tác, lấy đại dòng đầu trong actions",
+    tep: "src/pages/Ads.tsx",
+    tim: "    const khop = ds.find((a) => String(a.action_type ?? '') === loai);",
+    thay: "    const khop = ds[0];",
+  },
+  {
+    ten: "giá trị rác lọt lên màn hình thành NaN",
+    tep: "src/pages/Ads.tsx",
+    tim: "    return Number.isFinite(n) ? n : null;\n  };\n  const hanhDong",
+    thay: "    return n;\n  };\n  const hanhDong",
+  },
+  {
+    ten: "ô chọn kỳ quay lại làm cảnh, không nạp lại theo kỳ",
+    tep: "src/pages/Ads.tsx",
+    tim: "api.ads.overview(ky)",
+    thay: "api.ads.overview()",
+  },
+  {
+    ten: "bịa lại con số đơn chốt từ quảng cáo",
+    tep: "src/pages/Ads.tsx",
+    tim: "Chưa đo được",
+    thay: "47",
+  },
 ];
 
 function chayKiemTra(): boolean {
