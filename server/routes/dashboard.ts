@@ -189,7 +189,7 @@ dashboardRouter.get(
                sent_at AS at
           FROM messages
          WHERE user_id = $1 AND sender_type = 'ai'
-         ORDER BY sent_at DESC LIMIT 8)
+         ORDER BY created_at DESC LIMIT 8)
        ORDER BY at DESC
        LIMIT 12`,
       [req.user!.id]

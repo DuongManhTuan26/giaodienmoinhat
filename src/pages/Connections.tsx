@@ -44,6 +44,8 @@ export default function Connections() {
   /** Lần tải gần nhất có thất bại không. Dùng để không khoe "mọi thứ tốt" khi chưa có dữ liệu. */
   const [taiThatBai, setTaiThatBai] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  /** Báo việc vừa làm xong. Đổi Trang là việc có hậu quả nên phải nói ra. */
+  const [tinBao, setTinBao] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -77,6 +79,66 @@ export default function Connections() {
       setErrorMessage(error instanceof ApiError ? error.message : 'Đồng bộ thất bại');
     } finally {
       setSyncing(false);
+    }
+  };
+
+  /*
+   * Đổi Trang cho kênh Facebook.
+   *
+   * Nút cũ ở đây ghi "Thêm trang từ tài khoản này" và chạy lại toàn bộ luồng
+   * cấp quyền. Nhưng nhà cung cấp KHÔNG thêm — họ ghi đè lên kết nối đang có.
+   * Đã xảy ra thật: bấm nút đó để thêm Trang thứ hai thì Trang đầu bị đá ra,
+   * kênh giữ nguyên mã cũ, chỉ đổi tên và đổi Trang đang gắn, và hộp thư của
+   * Trang cũ tắt ngay lập tức (đo được: 2 hội thoại -> 0).
+   *
+   * Muốn chạy hai Trang bán hàng thì phải hai tài khoản riêng. Các bên hàng
+   * đầu cũng hướng dẫn tách bài theo Trang, và Meta thì phạt nội dung trùng.
+   */
+  const [doiTrangMo, setDoiTrangMo] = useState(false);
+  const [kenhDangDoi, setKenhDangDoi] = useState<{ id: string; ten: string } | null>(null);
+  const [dsTrang, setDsTrang] = useState<Array<{ id: string; name: string; fan_count?: number }>>([]);
+  const [trangDangGan, setTrangDangGan] = useState<string | null>(null);
+  const [dangTaiTrang, setDangTaiTrang] = useState(false);
+  const [dangDoi, setDangDoi] = useState(false);
+
+  const moDoiTrang = async (accountId: string, tenKenh: string) => {
+    setKenhDangDoi({ id: accountId, ten: tenKenh });
+    setDoiTrangMo(true);
+    setDangTaiTrang(true);
+    setErrorMessage('');
+    try {
+      const { data } = await api.connections.accountPages(accountId);
+      setDsTrang(data.pages);
+      setTrangDangGan(data.selectedPageId);
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không đọc được danh sách Trang');
+      setDoiTrangMo(false);
+    } finally {
+      setDangTaiTrang(false);
+    }
+  };
+
+  const doiSangTrang = async (pageId: string, tenTrang: string) => {
+    if (!kenhDangDoi) return;
+    const tenCu = dsTrang.find((t) => t.id === trangDangGan)?.name ?? 'Trang hiện tại';
+    if (!window.confirm(
+      `Chuyển sang "${tenTrang}"?\n\n` +
+      `"${tenCu}" sẽ NGỪNG nhận tin nhắn và bình luận ngay lập tức. ` +
+      `Một tài khoản chỉ bán hàng được trên một Trang.\n\n` +
+      `Muốn chạy cả hai Trang cùng lúc thì tạo thêm một tài khoản riêng cho Trang kia.`
+    )) return;
+
+    setDangDoi(true);
+    setErrorMessage('');
+    try {
+      const kq = await api.connections.switchPage(kenhDangDoi.id, pageId);
+      setTinBao(kq.message ?? 'Đã đổi Trang.');
+      setDoiTrangMo(false);
+      await load();
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không đổi được Trang');
+    } finally {
+      setDangDoi(false);
     }
   };
 
@@ -456,6 +518,85 @@ export default function Connections() {
 
       {errorBanner && <div className="mb-6">{errorBanner}</div>}
 
+      {tinBao && (
+        <div className="mb-6 flex items-start gap-3 p-4 rounded-xl bg-surface-container border border-primary/30">
+          <span className="material-symbols-outlined text-primary shrink-0">info</span>
+          <span className="flex-1 leading-relaxed text-sm text-on-surface">{tinBao}</span>
+          <button onClick={() => setTinBao('')} className="text-on-surface-variant hover:text-on-surface shrink-0" aria-label="Đóng">
+            <span className="material-symbols-outlined text-[18px]">close</span>
+          </button>
+        </div>
+      )}
+
+      {/*
+        * Hộp đổi Trang.
+        *
+        * Cố tình nói rõ hậu quả ngay trên màn hình, không giấu xuống hộp xác
+        * nhận: đổi Trang là tắt hộp thư của Trang cũ.
+        */}
+      {doiTrangMo && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70">
+          <div className="bg-surface-container-high border border-outline-variant rounded-2xl w-full max-w-[560px] max-h-[85vh] overflow-y-auto p-6">
+            <h3 className="text-lg font-bold text-on-surface mb-1">Đổi Trang bán hàng</h3>
+            <p className="text-sm text-on-surface-variant mb-4">
+              Tài khoản <span className="text-on-surface font-bold">{kenhDangDoi?.ten}</span> chỉ bán hàng được trên
+              {' '}<span className="text-on-surface font-bold">một Trang</span> tại một thời điểm.
+            </p>
+
+            <div className="flex items-start gap-2.5 p-3 rounded-lg bg-orange-400/10 border border-orange-400/30 mb-5">
+              <span className="material-symbols-outlined text-orange-400 text-[20px] shrink-0">warning</span>
+              <p className="text-sm text-on-surface leading-relaxed">
+                Đổi sang Trang khác thì Trang đang chọn <span className="font-bold">ngừng nhận tin nhắn và bình luận ngay</span>.
+                Muốn chạy cả hai Trang cùng lúc, hãy tạo thêm một tài khoản riêng cho Trang kia.
+              </p>
+            </div>
+
+            {dangTaiTrang ? (
+              <p className="text-sm text-on-surface-variant py-8 text-center">Đang đọc danh sách Trang…</p>
+            ) : (
+              <div className="flex flex-col gap-2 mb-6">
+                {dsTrang.map((t) => {
+                  const dangGan = t.id === trangDangGan;
+                  return (
+                    <div
+                      key={t.id}
+                      className={`flex items-center gap-3 p-4 rounded-xl border ${dangGan ? 'bg-primary/5 border-primary' : 'bg-surface-container border-outline-variant'}`}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="font-bold text-on-surface truncate">{t.name}</p>
+                        <p className="text-xs text-on-surface-variant mt-0.5">
+                          {dangGan ? 'Đang bán trên Trang này' : `${t.fan_count ?? 0} người theo dõi`}
+                        </p>
+                      </div>
+                      {dangGan ? (
+                        <span className="text-xs font-bold text-primary shrink-0 px-3 py-1.5">ĐANG DÙNG</span>
+                      ) : (
+                        <button
+                          onClick={() => doiSangTrang(t.id, t.name)}
+                          disabled={dangDoi}
+                          className="shrink-0 px-4 py-2 bg-primary/10 hover:bg-primary/20 border border-primary/30 text-primary font-bold rounded-lg text-sm transition-colors disabled:opacity-50"
+                        >
+                          {dangDoi ? 'Đang đổi…' : 'Chuyển sang đây'}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="flex justify-end">
+              <button
+                onClick={() => setDoiTrangMo(false)}
+                className="px-5 py-2.5 bg-surface-container border border-outline-variant text-on-surface font-bold rounded-xl hover:bg-surface-variant transition-colors"
+              >
+                Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-8">
         <div>
@@ -744,7 +885,18 @@ export default function Connections() {
                 </div>
                 <div>
                   <h3 className="text-lg font-bold text-on-surface mb-0.5">{account.platformName} — {account.accountName}</h3>
-                  <p className="text-sm text-on-surface-variant font-medium">Đang quản lý {account.pages.length} trang · Kết nối ngày {account.connectionDate}</p>
+                  {/*
+                    * Nói đúng thứ đang xảy ra.
+                    *
+                    * "Đang quản lý N trang" đếm số KÊNH, mà kênh Facebook thì
+                    * chỉ phục vụ được MỘT Trang tại một thời điểm. Câu cũ làm
+                    * ai cũng tưởng gom thêm Trang được.
+                    */}
+                  <p className="text-sm text-on-surface-variant font-medium">
+                    {account.platformId === 'facebook'
+                      ? <>Đang bán trên <span className="text-on-surface font-bold">{account.accountName}</span> · Kết nối ngày {account.connectionDate}</>
+                      : <>Đang quản lý {account.pages.length} kênh · Kết nối ngày {account.connectionDate}</>}
+                  </p>
                 </div>
               </div>
               <div className="flex items-center gap-3">
@@ -830,11 +982,20 @@ export default function Connections() {
 
             {/* Footer Buttons */}
             <div className="mt-auto flex gap-3">
-              <button 
-                onClick={() => handleOpenConnect(allPlatforms.find((c) => c.platformKey === account.platformId) ?? null!)}
-                className="flex-1 py-2.5 px-4 bg-surface-container border border-outline-variant text-on-surface font-bold rounded-xl hover:bg-surface-variant transition-colors">
-                Thêm trang từ tài khoản này
-              </button>
+              {account.platformId === 'facebook' ? (
+                <button
+                  onClick={() => moDoiTrang(account.pages[0]?.id ?? '', account.accountName)}
+                  disabled={!account.pages[0]}
+                  className="flex-1 py-2.5 px-4 bg-surface-container border border-outline-variant text-on-surface font-bold rounded-xl hover:bg-surface-variant transition-colors disabled:opacity-50">
+                  Đổi sang Trang khác
+                </button>
+              ) : (
+                <button
+                  onClick={() => handleOpenConnect(allPlatforms.find((c) => c.platformKey === account.platformId) ?? null!)}
+                  className="flex-1 py-2.5 px-4 bg-surface-container border border-outline-variant text-on-surface font-bold rounded-xl hover:bg-surface-variant transition-colors">
+                  Nối lại tài khoản này
+                </button>
+              )}
               <button onClick={() => handleDisconnectAccount(account.platformId)} className="flex-1 py-2.5 px-4 bg-surface-container border border-error/50 text-error font-bold rounded-xl hover:bg-error/10 hover:border-error transition-colors">
                 Ngắt kết nối cả tài khoản
               </button>

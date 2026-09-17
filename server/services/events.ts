@@ -407,7 +407,7 @@ async function handleMessageSent(event: WebhookEvent): Promise<void> {
         AND external_id IS NULL
         AND content = $2
         AND sent_at > now() - interval '5 minutes'
-      ORDER BY sent_at DESC LIMIT 1`,
+      ORDER BY created_at DESC LIMIT 1`,
     [message.conversationId, text]
   );
 

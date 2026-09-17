@@ -1880,6 +1880,58 @@ kiem("trang quảng cáo", "ô chọn kỳ có nối thật và nạp lại theo
 }
 
 // ---------------------------------------------------------------------------
+// 44. Thứ tự tin nhắn — nguyên nhân lỗi "AI nói vài câu rồi mất hút"
+//
+// Đo trên dữ liệu thật: tin của AI, nhân viên, hệ thống có sent_at lệch 0 giây
+// so với created_at. Tin của KHÁCH lệch trung bình 83 giây, cao nhất 548 giây
+// — Facebook ghi giờ lúc khách bấm gửi, tin về tới mình muộn hơn.
+//
+// Tái hiện được nguyên vẹn, trong giao dịch có rollback, đúng mốc giờ bắt
+// được tối 18/09:
+//   02:16:23 khách "Giúp gì được"   (Facebook ghi 02:11:52)
+//   02:16:30 AI trả lời             (ghi 02:16:30)
+//   02:16:35 khách "Lại mất hút à"  (Facebook ghi 02:12:35)
+//
+//   xếp theo sent_at    → ... customer, customer, AI   → tin cuối là AI → IM LẶNG
+//   xếp theo created_at → ... AI, customer, customer   → tin cuối là khách → TRẢ LỜI
+//
+// Chốt chặn "tin cuối phải là của khách" sinh ra để AI không trả lời chính nó.
+// Xếp sai thứ tự thì chính chốt đó bịt miệng AI trước mặt khách.
+// ---------------------------------------------------------------------------
+{
+  const tepCoTinNhan = [
+    "server/services/sales-ai.ts",
+    "server/services/events.ts",
+    "server/routes/inbox.ts",
+    "server/routes/dashboard.ts",
+    "server/routes/settings.ts",
+  ];
+  const xepTheoGioNenTang: string[] = [];
+  for (const t of tepCoTinNhan) {
+    const ma = boChuThich(fs.readFileSync(path.join(GOC, t), "utf8"));
+    for (const dong of ma.split("\n")) {
+      // telegram_sent_at là cột khác, không liên quan tới thứ tự tin nhắn.
+      const sach = dong.replace(/telegram_sent_at/g, "");
+      if (/ORDER BY[^`]*\bsent_at\b/.test(sach)) xepTheoGioNenTang.push(`${t}: ${dong.trim().slice(0, 60)}`);
+    }
+  }
+  kiem("thứ tự tin nhắn", "không chỗ nào xếp tin theo giờ nền tảng ghi",
+    xepTheoGioNenTang, []);
+
+  const nguonBan = fs.readFileSync(path.join(GOC, "server/services/sales-ai.ts"), "utf8");
+  kiem("thứ tự tin nhắn", "lịch sử gửi cho AI xếp theo lúc nhận",
+    /ORDER BY created_at DESC LIMIT \$2/.test(nguonBan), true);
+  kiem("thứ tự tin nhắn", "vẫn còn chốt chặn tin cuối phải là của khách",
+    /if \(lastMessage\.sender_type !== "customer"\)/.test(nguonBan), true);
+
+  const nguonMig = fs.readFileSync(
+    path.join(GOC, "server/migrations/019_thu_tu_theo_luc_nhan.sql"), "utf8"
+  );
+  kiem("thứ tự tin nhắn", "có chỉ mục theo lúc nhận để truy vấn không chậm",
+    /messages_conversation_created_idx[\s\S]*?\(conversation_id, created_at\)/.test(nguonMig), true);
+}
+
+// ---------------------------------------------------------------------------
 console.log(`\nĐã kiểm ${tong} điểm.`);
 if (hong === 0) {
   console.log("Tất cả đều đạt.\n");

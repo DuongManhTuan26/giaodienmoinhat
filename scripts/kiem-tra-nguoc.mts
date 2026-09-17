@@ -866,6 +866,24 @@ const DUC: PhepDuc[] = [
     tim: "  user_id            BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,",
     thay: "  user_id            BIGINT      NOT NULL REFERENCES users(id),",
   },
+  {
+    ten: "xếp lịch sử theo giờ Facebook — AI im lặng giữa chừng",
+    tep: "server/services/sales-ai.ts",
+    tim: "      ORDER BY created_at DESC LIMIT $2`,",
+    thay: "      ORDER BY sent_at DESC LIMIT $2`,",
+  },
+  {
+    ten: "hộp thư xếp tin theo giờ Facebook",
+    tep: "server/routes/inbox.ts",
+    tim: "ORDER BY created_at ASC LIMIT 300",
+    thay: "ORDER BY sent_at ASC LIMIT 300",
+  },
+  {
+    ten: "gỡ chốt chặn tin cuối phải là của khách",
+    tep: "server/services/sales-ai.ts",
+    tim: '  if (lastMessage.sender_type !== "customer") {',
+    thay: "  if (false) {",
+  },
 ];
 
 function chayKiemTra(): boolean {

@@ -441,6 +441,23 @@ export const api = {
         };
       }>("/connections/pending-selection"),
     /** Chốt các Trang đã chọn — đây là bước thật sự tạo kênh. */
+    /** Các Trang một kênh Facebook vào được, kèm Trang đang gắn. */
+    accountPages: (accountId: string) =>
+      get<{
+        data: {
+          pages: Array<{ id: string; name: string; category?: string; fan_count?: number }>;
+          selectedPageId: string | null;
+        };
+      }>(`/connections/accounts/${accountId}/pages`),
+    /**
+     * Đổi Trang đang gắn. Đây là ĐỔI chứ không phải thêm: Trang cũ sẽ ngừng
+     * nhận tin nhắn và bình luận.
+     */
+    switchPage: (accountId: string, pageId: string) =>
+      request<{ data: { selectedPage: { id: string; name: string } | null }; message?: string }>(
+        `/connections/accounts/${accountId}/page`,
+        { method: "PUT", body: { pageId } }
+      ),
     selectPages: (pageIds: string[]) =>
       post<{ data: { connected: string[]; failed: Array<{ pageId: string; error: string }> } }>(
         "/connections/select-pages",

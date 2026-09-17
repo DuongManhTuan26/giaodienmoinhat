@@ -63,7 +63,7 @@ inboxRouter.get(
               sa.display_name AS account_name,
               (SELECT m.content FROM messages m
                 WHERE m.conversation_id = c.id
-                ORDER BY m.sent_at DESC LIMIT 1) AS last_message
+                ORDER BY m.created_at DESC LIMIT 1) AS last_message
          FROM conversations c
          LEFT JOIN customers cu ON cu.id = c.customer_id
          LEFT JOIN social_accounts sa ON sa.id = c.social_account_id
@@ -123,7 +123,7 @@ inboxRouter.get(
 
     const messages = await query(
       `SELECT id, sender_type, content, attachments, is_handoff, sent_at
-         FROM messages WHERE conversation_id = $1 ORDER BY sent_at ASC LIMIT 300`,
+         FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC LIMIT 300`,
       [req.params.id]
     );
 

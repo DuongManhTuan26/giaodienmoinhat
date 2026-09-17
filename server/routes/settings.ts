@@ -520,9 +520,9 @@ settingsRouter.get(
     const responseTime = await queryOne<{ avg_seconds: number | null }>(
       `WITH pairs AS (
          SELECT m.sent_at AS customer_at,
-                LEAD(m.sent_at) OVER (PARTITION BY m.conversation_id ORDER BY m.sent_at) AS next_at,
+                LEAD(m.created_at) OVER (PARTITION BY m.conversation_id ORDER BY m.created_at) AS next_at,
                 m.sender_type,
-                LEAD(m.sender_type) OVER (PARTITION BY m.conversation_id ORDER BY m.sent_at) AS next_type
+                LEAD(m.sender_type) OVER (PARTITION BY m.conversation_id ORDER BY m.created_at) AS next_type
            FROM messages m
           WHERE m.user_id = $1 AND m.sent_at >= now() - interval '30 days'
        )

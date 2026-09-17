@@ -380,6 +380,42 @@ export async function listFacebookPages(params: {
 }
 
 /**
+ * Các Trang mà một kênh Facebook ĐANG kết nối có quyền vào, kèm Trang đang gắn.
+ *
+ * Khác với listFacebookPages ở trên: hàm kia dùng giữa chừng luồng cấp quyền
+ * và cần tempToken. Hàm này dùng cho kênh đã kết nối rồi, không cần cấp lại
+ * quyền lần nào.
+ */
+export async function layTrangCuaKenh(accountId: string): Promise<{
+  pages: FacebookPage[];
+  selectedPageId: string | null;
+}> {
+  const data = await request<{ pages?: FacebookPage[]; selectedPageId?: string }>(
+    `/accounts/${encodeURIComponent(accountId)}/facebook-page`
+  );
+  return { pages: data.pages ?? [], selectedPageId: data.selectedPageId ?? null };
+}
+
+/**
+ * Đổi Trang đang gắn cho một kênh Facebook.
+ *
+ * QUAN TRỌNG: một kết nối Facebook chỉ phục vụ MỘT Trang tại một thời điểm.
+ * Đổi sang Trang khác thì Trang cũ ngừng gửi tin nhắn và bình luận về — đã đo
+ * thật: kênh gắn Trang A trả về 2 hội thoại, đổi sang Trang B thì trả về 0.
+ * Đây là giới hạn của nhà cung cấp, không phải của Facebook.
+ */
+export async function doiTrangDangGan(
+  accountId: string,
+  pageId: string
+): Promise<{ id: string; name: string } | null> {
+  const data = await request<{ selectedPage?: { id: string; name: string } }>(
+    `/accounts/${encodeURIComponent(accountId)}/facebook-page`,
+    { method: "PUT", body: { selectedPageId: pageId } }
+  );
+  return data.selectedPage ?? null;
+}
+
+/**
  * Chốt Trang khách đã chọn — đây là bước thật sự tạo ra kênh trên Zernio.
  *
  * userProfile phải là OBJECT đã giải mã, không phải chuỗi mã hoá URL nhận được

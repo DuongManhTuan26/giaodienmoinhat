@@ -536,6 +536,66 @@ connectionsRouter.post(
   })
 );
 
+/*
+ * Các Trang một kênh Facebook vào được, kèm Trang đang gắn.
+ *
+ * Chủ shop cần nhìn thấy danh sách này TRƯỚC khi đổi, để biết mình đang đổi
+ * đi đâu và Trang nào sắp ngừng nhận tin.
+ */
+connectionsRouter.get(
+  "/accounts/:id/pages",
+  route(async (req, res) => {
+    const account = await queryOne<{ id: string; platform: string }>(
+      "SELECT id, platform FROM social_accounts WHERE id = $1 AND user_id = $2",
+      [req.params.id, req.user!.id]
+    );
+    if (!account) throw new AppError("Không tìm thấy kênh này", 404);
+    if (account.platform !== "facebook") {
+      throw new AppError("Chỉ kênh Facebook mới có nhiều Trang để chọn", 400);
+    }
+
+    const { pages, selectedPageId } = await zernio.layTrangCuaKenh(account.id);
+    res.json({ success: true, data: { pages, selectedPageId } });
+  })
+);
+
+/*
+ * Đổi Trang đang gắn.
+ *
+ * Một kết nối Facebook chỉ phục vụ MỘT Trang tại một thời điểm — đã đo thật:
+ * kênh gắn Trang A trả về 2 hội thoại, đổi sang Trang B thì còn 0. Nên đây là
+ * hành động ĐỔI, không phải thêm, và giao diện phải nói đúng như vậy.
+ *
+ * Đổi xong đồng bộ lại ngay để tên kênh trong database khớp Trang mới, chủ
+ * shop không phải chờ vòng đồng bộ 30 phút mới thấy đúng.
+ */
+connectionsRouter.put(
+  "/accounts/:id/page",
+  route(async (req, res) => {
+    const pageId = requireString(req.body, "pageId", "Trang");
+
+    const account = await queryOne<{ id: string; platform: string }>(
+      "SELECT id, platform FROM social_accounts WHERE id = $1 AND user_id = $2",
+      [req.params.id, req.user!.id]
+    );
+    if (!account) throw new AppError("Không tìm thấy kênh này", 404);
+    if (account.platform !== "facebook") {
+      throw new AppError("Chỉ kênh Facebook mới đổi được Trang", 400);
+    }
+
+    const trangMoi = await zernio.doiTrangDangGan(account.id, pageId);
+    await syncAccountsForUser(req.user!.id, req.user!.profileRef!);
+
+    res.json({
+      success: true,
+      data: { selectedPage: trangMoi },
+      message: trangMoi
+        ? `Đã chuyển sang Trang ${trangMoi.name}. Trang trước đó ngừng nhận tin nhắn và bình luận.`
+        : "Đã đổi Trang.",
+    });
+  })
+);
+
 connectionsRouter.delete(
   "/accounts/:id",
   route(async (req, res) => {

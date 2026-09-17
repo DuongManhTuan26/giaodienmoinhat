@@ -175,7 +175,7 @@ export async function handleIncomingMessage(conversationId: string): Promise<boo
   }>(
     `SELECT sender_type, content, attachments, attachment_text FROM messages
       WHERE conversation_id = $1
-      ORDER BY sent_at DESC LIMIT $2`,
+      ORDER BY created_at DESC LIMIT $2`,
     [conversationId, CONTEXT_MESSAGE_LIMIT]
   );
   const history = messages.rows.reverse();
@@ -940,7 +940,7 @@ async function sendHoldingMessageOnce(conversation: ConversationRow): Promise<vo
    */
   const cuoi = await queryOne<{ sender_type: string }>(
     `SELECT sender_type FROM messages
-      WHERE conversation_id = $1 ORDER BY sent_at DESC LIMIT 1`,
+      WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 1`,
     [conversation.id]
   );
   if (!cuoi || cuoi.sender_type !== "customer") return;
@@ -1143,7 +1143,7 @@ export async function extractOrderInfo(conversationId: string): Promise<{
 }> {
   const messages = await query<{ sender_type: string; content: string }>(
     `SELECT sender_type, content FROM messages
-      WHERE conversation_id = $1 ORDER BY sent_at ASC LIMIT 100`,
+      WHERE conversation_id = $1 ORDER BY created_at ASC LIMIT 100`,
     [conversationId]
   );
 
@@ -1194,7 +1194,7 @@ export async function suggestReply(conversationId: string): Promise<string> {
 
   const messages = await query<{ sender_type: string; content: string }>(
     `SELECT sender_type, content FROM messages
-      WHERE conversation_id = $1 ORDER BY sent_at DESC LIMIT 20`,
+      WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 20`,
     [conversationId]
   );
 
@@ -1278,7 +1278,7 @@ export async function runDueFollowUps(): Promise<number> {
 
       const cuoi = await queryOne<{ sender_type: string }>(
         `SELECT sender_type FROM messages WHERE conversation_id = $1
-          ORDER BY sent_at DESC LIMIT 1`,
+          ORDER BY created_at DESC LIMIT 1`,
         [hoi.id]
       );
       if (cuoi?.sender_type === "customer") continue;
@@ -1326,7 +1326,7 @@ export async function soanCauNhac(
 ): Promise<string> {
   const messages = await query<{ sender_type: string; content: string }>(
     `SELECT sender_type, content FROM messages
-      WHERE conversation_id = $1 ORDER BY sent_at DESC LIMIT 10`,
+      WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 10`,
     [conversation.id]
   );
   const transcript = messages.rows
