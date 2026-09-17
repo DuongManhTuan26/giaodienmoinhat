@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { clsx } from 'clsx';
 import { useActivePage, PLATFORM_BADGE } from '../lib/ActivePage';
 
@@ -21,8 +21,22 @@ const IS_EXTERNAL_SUPPORT = /^https?:|^mailto:/.test(SUPPORT_URL);
 export default function Sidebar({
   onLogout,
   laQuanTri = false,
+  moKhung = false,
+  onDong,
 }: {
   onLogout?: () => void;
+  /*
+   * Trên điện thoại thanh menu là NGĂN KÉO, mặc định trượt ra ngoài màn hình.
+   *
+   * Đã dựng lại trên màn 375px: thanh menu rộng cố định 288px chiếm 77% bề
+   * ngang, đẩy toàn bộ nội dung ra khỏi mép phải — tiêu đề trang bị cắt, các ô
+   * số bị cắt, không thao tác được gì. Mà chủ shop thì xem hàng trên điện
+   * thoại là chính.
+   *
+   * Từ lg trở lên nó vẫn đứng cố định như cũ, không đổi gì.
+   */
+  moKhung?: boolean;
+  onDong?: () => void;
   /*
    * Chỉ quản trị mới thấy mục Quản Trị Hệ Thống.
    * Giấu trên giao diện không phải là bảo vệ — máy chủ vẫn kiểm lại vai trò từ
@@ -32,7 +46,16 @@ export default function Sidebar({
   laQuanTri?: boolean;
 }) {
   const navigate = useNavigate();
+  const viTri = useLocation();
   const { accounts, activeAccount, activeAccountId, setActiveAccountId } = useActivePage();
+
+  /*
+   * Chọn một mục là đóng ngăn kéo.
+   *
+   * Không đóng thì trên điện thoại chủ shop bấm sang trang mới xong vẫn chỉ
+   * nhìn thấy cái menu phủ kín màn hình, tưởng là bấm không ăn.
+   */
+  useEffect(() => { onDong?.(); }, [viTri.pathname]);
   const [pageMenuOpen, setPageMenuOpen] = useState(false);
 
   const group1 = [
@@ -127,8 +150,17 @@ export default function Sidebar({
   );
 
   return (
-    <aside 
-      className="w-72 h-screen fixed left-0 top-0 flex flex-col z-50 overflow-hidden bg-[#030509]"
+    <>
+    {/* Nền mờ sau ngăn kéo: bấm ra ngoài là đóng. Chỉ có trên điện thoại. */}
+    {moKhung && (
+      <div
+        onClick={onDong}
+        aria-hidden
+        className="fixed inset-0 z-40 bg-black/60 lg:hidden"
+      />
+    )}
+    <aside
+      className={`w-72 h-screen fixed left-0 top-0 flex flex-col z-50 overflow-hidden bg-[#030509] transition-transform duration-300 lg:translate-x-0 ${moKhung ? 'translate-x-0' : '-translate-x-full'}`}
     >
       {/* Deep Space / Cyberpunk Ambient Background Effects */}
       <div className="absolute -top-32 -left-32 w-96 h-96 bg-[#00e5ff]/10 rounded-full blur-[100px] pointer-events-none"></div>
@@ -288,5 +320,6 @@ export default function Sidebar({
         </div>
       </div>
     </aside>
+    </>
   );
 }

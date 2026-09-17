@@ -21,6 +21,7 @@ import { docCacBuoc, taoMaBuoc, maCacBuoc } from "../server/services/sales-stage
 import { anDiaChiKho, hoanDiaChiKho, laDiaChiKho } from "../server/services/media-proxy.js";
 import { laNguonAnhCuaNenTang } from "../server/services/vision.js";
 import { giaCoTrongChu, laySoDau } from "../server/services/sales-ai.js";
+import { gopVaoTongChi } from "../server/services/orders.js";
 import { MAU_PHONG_CACH } from "../src/lib/phong-cach-anh.js";
 import {
   gioiHanChatNhat,
@@ -79,6 +80,20 @@ function kiem(nhom: string, ten: string, thuc: unknown, mong: unknown): void {
     hong++;
     loi.push(`  ✗ [${nhom}] ${ten}\n      nhận:  ${a}\n      phải:  ${b}`);
   }
+}
+
+/*
+ * Bỏ chú thích trước khi soi mã.
+ *
+ * Đã dính hai lần: phép kiểm "không còn số bịa trong trang Đơn hàng" báo hỏng
+ * vì chuỗi đó nằm trong đúng cái chú thích giải thích vì sao phải bỏ nó. Chú
+ * thích không chạy; chỉ mã mới chạy.
+ */
+function boChuThich(ma: string): string {
+  return ma
+    .replace(/\{\s*\/\*[\s\S]*?\*\/\s*\}/g, "") // {/* ... */} trong JSX
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^[ \t]*\/\/.*$/gm, "");
 }
 
 // ---------------------------------------------------------------------------
@@ -524,7 +539,9 @@ kiem("gói dịch vụ", "không còn chỗ nào cắt mốc tháng theo giờ d
 kiem("gói dịch vụ", "mọi mốc tháng đều dùng chung hằng số giờ Việt Nam",
   (nguonCaiDat.match(/\$\{DAU_THANG_VN\}/g) ?? []).length, 4);
 kiem("gói dịch vụ", "hằng số mốc tháng khai theo giờ Việt Nam",
-  /const DAU_THANG_VN =[\s\S]{0,200}?Asia\/Ho_Chi_Minh/.test(nguonCaiDat), true);
+  /export const DAU_THANG_VN =[\s\S]{0,200}?Asia\/Ho_Chi_Minh/.test(
+    fs.readFileSync(path.join(GOC, "server/moc-thoi-gian.ts"), "utf8")
+  ), true);
 
 const nguonBangGia = fs.readFileSync(path.join(GOC, "src/lib/pricing.ts"), "utf8");
 kiem("gói dịch vụ", "dữ liệu gói không tự nhận là gói đang dùng",
@@ -1593,6 +1610,173 @@ kiem("cấp quyền kênh", "đường quay về KHÔNG nhận diện chủ shop
     thanQuayVe.replace(/^\s*(\/\*[\s\S]*?\*\/|\*.*|\/\/.*)$/gm, "")
       .split("\n").filter((d) => /FROM users|profile_ref/.test(d)).join("\n")
   ), false);
+
+// ---------------------------------------------------------------------------
+// 41. Bảy chỗ nói sai với chủ shop
+//
+// Đều tái hiện được trên máy trước khi sửa.
+// ---------------------------------------------------------------------------
+
+// --- Tổng chi của khách phải đi theo đơn -------------------------------------
+//
+// Tái hiện: khách có một đơn CŨ 2.000.000đ đã mua xong, cộng một đơn mới
+// 2 chiếc 360.000đ. Chủ shop sửa thành 5 chiếc (đơn thành 900.000đ) rồi huỷ.
+// Phần trừ lấy tổng HIỆN TẠI 900.000 trừ vào số dư chỉ từng được cộng 360.000
+// → khách còn 1.460.000 thay vì 2.000.000. Mất trắng 540.000 của đơn đã trả.
+for (const [tt, tien, mongDon, mongTien, vi] of [
+  ["pending", 360_000, 1, 360_000, "đơn chờ xác nhận tính đủ"],
+  ["confirmed", 360_000, 1, 360_000, "đơn đã xác nhận tính đủ"],
+  ["completed", 900_000, 1, 900_000, "đơn hoàn thành tính đủ"],
+  ["cancelled", 900_000, 0, 0, "đơn đã huỷ không tính đồng nào"],
+] as [string, number, number, number, string][]) {
+  const g = gopVaoTongChi(tt, tien);
+  kiem("tổng chi khách", `${vi} — số đơn`, g.don, mongDon);
+  kiem("tổng chi khách", `${vi} — số tiền`, g.tien, mongTien);
+}
+{
+  // Đúng bốn bước đã dựng lại, tính bằng chính công thức của mã thật.
+  const lech = (ttTruoc: string, tienTruoc: number, ttSau: string, tienSau: number) => {
+    const a = gopVaoTongChi(ttTruoc, tienTruoc);
+    const b = gopVaoTongChi(ttSau, tienSau);
+    return { don: b.don - a.don, tien: b.tien - a.tien };
+  };
+  kiem("tổng chi khách", "sửa 2 -> 5 chiếc thì cộng thêm đúng phần chênh",
+    lech("pending", 360_000, "pending", 900_000), { don: 0, tien: 540_000 });
+  kiem("tổng chi khách", "huỷ thì trừ đúng số tiền của chính đơn đó",
+    lech("pending", 900_000, "cancelled", 900_000), { don: -1, tien: -900_000 });
+  kiem("tổng chi khách", "bỏ huỷ thì cộng lại đúng bằng lúc trừ",
+    lech("cancelled", 900_000, "pending", 900_000), { don: 1, tien: 900_000 });
+  kiem("tổng chi khách", "vừa sửa vừa huỷ trong một lần vẫn đúng",
+    lech("pending", 360_000, "cancelled", 900_000), { don: -1, tien: -360_000 });
+}
+kiem("tổng chi khách", "đường sửa đơn dùng đúng công thức chung",
+  /const g1 = gopVaoTongChi\(truoc\.status, Number\(truoc\.total\)\);/.test(nguonDonRt) &&
+    /const g2 = gopVaoTongChi\(\s*\n?\s*sau\.status \?\? truoc\.status,/.test(nguonDonRt), true);
+kiem("tổng chi khách", "cập nhật cả khi CHỈ đổi số lượng hay giá, không chỉ khi đổi trạng thái",
+  /if \(lechDon !== 0 \|\| lechTien !== 0\) \{/.test(nguonDonRt) &&
+    !/sau && sau !== truoc\.status/.test(nguonDonRt), true);
+
+// --- Trang Đơn hàng không được bịa số ----------------------------------------
+//
+// Tái hiện: shop có ĐÚNG 0 đơn, trang vẫn hiện "ĐƠN HÔM NAY 7", "ĐANG GIAO 12",
+// "DOANH THU THÁNG 48.500.000 đ", "+3 so với hôm qua", "+18% so với tháng
+// trước" — trong khi ngay dòng trên nó ghi đúng "0 ĐƠN HÔM NAY".
+const nguonTrangDon = fs.readFileSync(path.join(GOC, "src/pages/Orders.tsx"), "utf8");
+const maTrangDon = boChuThich(nguonTrangDon);
+for (const bia of ["48.500.000", "+3 so với hôm qua", "+18% so với tháng trước"]) {
+  kiem("trang đơn hàng", `không còn số bịa: "${bia}"`, maTrangDon.includes(bia), false);
+}
+kiem("trang đơn hàng", "ô ĐƠN HÔM NAY lấy từ máy chủ",
+  /ĐƠN HÔM NAY<\/h3>[\s\S]{0,200}?\{summary\.today_count\}/.test(nguonTrangDon), true);
+kiem("trang đơn hàng", "ô ĐANG GIAO lấy từ máy chủ",
+  /ĐANG GIAO<\/h3>[\s\S]{0,200}?\{summary\.shipping\}/.test(nguonTrangDon), true);
+kiem("trang đơn hàng", "ô DOANH THU THÁNG lấy từ máy chủ",
+  /DOANH THU THÁNG<\/h3>[\s\S]{0,200}?formatCurrency\(summary\.month_revenue\)/.test(nguonTrangDon), true);
+kiem("trang đơn hàng", "kỳ trước bằng 0 thì KHÔNG hiện phần trăm",
+  /if \(!truoc\) return null;/.test(nguonTrangDon), true);
+kiem("trang đơn hàng", "đơn chưa có giá được nói thẳng, không hiện '0 đ'",
+  /chuaCoGia: Number\(order\.total\) === 0/.test(nguonTrangDon) &&
+    /Chưa có giá/.test(nguonTrangDon), true);
+
+// --- Bảng đếm đơn phải đủ trạng thái -----------------------------------------
+const TRANG_THAI_DON = ["pending", "confirmed", "shipping", "completed", "cancelled"];
+for (const tt of TRANG_THAI_DON) {
+  kiem("bảng đếm đơn", `đếm cả trạng thái '${tt}'`,
+    new RegExp(`COUNT\\(\\*\\) FILTER \\(WHERE status = '${tt}'\\)`).test(nguonDonRt), true);
+}
+kiem("bảng đếm đơn", "doanh thu KHÔNG tính đơn đã huỷ",
+  /SUM\(total\) FILTER \(\s*\n?\s*WHERE created_at >= \$\{DAU_THANG_VN\}\s*\n?\s*AND status <> 'cancelled'\)/.test(
+    nguonDonRt
+  ), true);
+
+// --- Mốc ngày và mốc tháng theo giờ Việt Nam ---------------------------------
+const nguonMoc = fs.readFileSync(path.join(GOC, "server/moc-thoi-gian.ts"), "utf8");
+kiem("múi giờ", "mốc ngày và mốc tháng đều quy về giờ Việt Nam",
+  (nguonMoc.match(/AT TIME ZONE 'Asia\/Ho_Chi_Minh'/g) ?? []).length, 4);
+kiem("múi giờ", "chỉ có MỘT bản định nghĩa, các nơi khác đều nhập về",
+  ["server/routes/settings.ts", "server/routes/orders.ts"].every((t) =>
+    /import \{[^}]*DAU_(NGAY|THANG)_VN[^}]*\} from "\.\.\/moc-thoi-gian\.js"/.test(
+      fs.readFileSync(path.join(GOC, t), "utf8")
+    )
+  ), true);
+
+// --- Tỷ lệ chốt kỳ trước -----------------------------------------------------
+const nguonPhanTich = fs.readFileSync(path.join(GOC, "server/routes/analytics.ts"), "utf8");
+kiem("phân tích", "tỷ lệ chốt kỳ trước đếm thật, không gắn cứng 0",
+  /const prevConversations = Number\(previous\?\.conversations_count \?\? 0\);/.test(nguonPhanTich), true);
+kiem("phân tích", "có so sánh tỷ lệ chốt hai kỳ",
+  /closeRate: percentChange\(closeRate, prevCloseRate\)/.test(nguonPhanTich), true);
+kiem("phân tích", "không còn nhánh nào trả null ở cả hai đầu",
+  /\? null : null/.test(boChuThich(nguonPhanTich)), false);
+
+// --- Ba bước hướng dẫn phải là thật ------------------------------------------
+//
+// Tái hiện: nút "Bắt đầu ngay" chỉ cộng một biến đếm; bấm ba lần là cả ba bước
+// hiện dấu tích rồi nhảy sang màn hình khẳng định "Đã kết nối kênh bán hàng",
+// "AI đã được cấu hình và thử nghiệm", "Telegram đã kết nối" — cả ba đều sai.
+const nguonHuongDan = fs.readFileSync(path.join(GOC, "src/pages/Onboarding.tsx"), "utf8");
+kiem("ba bước đầu", "đọc trạng thái thật từ máy chủ",
+  /export async function docTrangThaiBaBuoc/.test(nguonHuongDan) &&
+    /api\.connections\.accounts\(\)/.test(nguonHuongDan) &&
+    /api\.ai\.config\('sales'\)/.test(nguonHuongDan) &&
+    /api\.settings\.telegram\(\)/.test(nguonHuongDan), true);
+kiem("ba bước đầu", "không còn đếm bước bằng biến trong bộ nhớ",
+  /completedSteps/.test(nguonHuongDan), false);
+kiem("ba bước đầu", "không còn tự nhảy sang màn hình hoàn tất sau 0,6 giây",
+  /setTimeout\(onComplete/.test(nguonHuongDan), false);
+kiem("ba bước đầu", "mỗi bước dẫn tới đúng trang làm việc",
+  ["/connections", "/auto-scripts", "/telegram"].every((d) =>
+    nguonHuongDan.includes(`duong: '${d}'`)
+  ), true);
+const nguonHoanTat = fs.readFileSync(path.join(GOC, "src/pages/SetupComplete.tsx"), "utf8");
+kiem("ba bước đầu", "màn hình hoàn tất đọc trạng thái thật",
+  /docTrangThaiBaBuoc/.test(nguonHoanTat), true);
+/*
+ * Chữ trên màn hình phải LẤY TỪ trạng thái, không phải chữ chết.
+ *
+ * Bản đầu tôi chỉ kiểm "không còn chuỗi font-bold">Đã kết nối kênh bán hàng<".
+ * Đục thẳng chữ đó vào chỗ khác — className là template literal nên dấu đóng
+ * khác đi — là phép kiểm vẫn xanh trong khi màn hình lại khẳng định bừa.
+ */
+kiem("ba bước đầu", "ba dòng đều lấy chữ từ trạng thái đọc được",
+  /\{m\.xong \? m\.chuXong : m\.chuChua\}/.test(nguonHoanTat), true);
+kiem("ba bước đầu", "không có dòng nào khẳng định cứng là đã xong",
+  ["Đã kết nối kênh bán hàng", "AI đã được cấu hình và thử nghiệm", "Đã kết nối Telegram"].some(
+    (chu) => new RegExp(`>\\s*${chu}\\s*<`).test(boChuThich(nguonHoanTat))
+  ), false);
+
+// --- Dùng được trên điện thoại -----------------------------------------------
+//
+// Tái hiện trên màn 375px: thanh menu rộng cố định 288px chiếm 77% bề ngang,
+// đẩy toàn bộ nội dung ra khỏi mép phải — tiêu đề và các ô số đều bị cắt.
+const nguonMenu = fs.readFileSync(path.join(GOC, "src/components/Sidebar.tsx"), "utf8");
+const nguonApp2 = fs.readFileSync(path.join(GOC, "src/App.tsx"), "utf8");
+const nguonThanhTren = fs.readFileSync(path.join(GOC, "src/components/TopNavBar.tsx"), "utf8");
+kiem("điện thoại", "thanh menu trượt ra ngoài khi chưa mở",
+  /lg:translate-x-0 \$\{moKhung \? 'translate-x-0' : '-translate-x-full'\}/.test(nguonMenu), true);
+kiem("điện thoại", "có nền mờ bấm ra ngoài để đóng",
+  /onClick=\{onDong\}[\s\S]{0,160}?lg:hidden/.test(nguonMenu), true);
+kiem("điện thoại", "chọn một mục là đóng ngăn kéo",
+  /useEffect\(\(\) => \{ onDong\?\.\(\); \}, \[viTri\.pathname\]\)/.test(nguonMenu), true);
+kiem("điện thoại", "nội dung chỉ chừa chỗ cho menu từ lg trở lên",
+  /className="flex-1 lg:ml-72 min-w-0/.test(nguonApp2) && !/"flex-1 ml-72/.test(nguonApp2), true);
+kiem("điện thoại", "thanh trên không còn bị ẩn hẳn",
+  /hidden md:flex justify-between/.test(nguonThanhTren), false);
+kiem("điện thoại", "có nút mở menu dưới lg",
+  /onClick=\{onMoMenu\}[\s\S]{0,260}?lg:hidden/.test(nguonThanhTren), true);
+const nguonHopThu = fs.readFileSync(path.join(GOC, "src/pages/Inbox.tsx"), "utf8");
+kiem("điện thoại", "hộp thư: điện thoại chỉ hiện một trong hai cột",
+  /xemChiTietDiDong \? 'hidden lg:flex' : 'flex'/.test(nguonHopThu) &&
+    /xemChiTietDiDong \? 'flex' : 'hidden lg:flex'/.test(nguonHopThu), true);
+kiem("điện thoại", "hộp thư: có nút quay lại danh sách",
+  /setXemChiTietDiDong\(false\)[\s\S]{0,500}?arrow_back/.test(nguonHopThu), true);
+kiem("điện thoại", "hộp thư: cột hồ sơ khách chỉ hiện khi đủ rộng",
+  /hidden xl:flex flex-col h-full flex-shrink-0/.test(nguonHopThu), true);
+
+// --- Không hứa hạn mức mà máy chủ không giữ ----------------------------------
+const nguonKetNoi2 = fs.readFileSync(path.join(GOC, "src/pages/Connections.tsx"), "utf8");
+kiem("nói đúng sự thật", "không hứa hạn mức theo gói khi máy chủ chưa chặn theo gói",
+  /Gói của bạn (còn|đã hết)/.test(boChuThich(nguonKetNoi2)), false);
 
 // ---------------------------------------------------------------------------
 console.log(`\nĐã kiểm ${tong} điểm.`);

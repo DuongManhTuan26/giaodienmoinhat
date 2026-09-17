@@ -11,6 +11,7 @@ import {
   resumeAi,
   effectiveRateLimit,
 } from "../services/guardrails.js";
+import { DAU_THANG_VN } from "../moc-thoi-gian.js";
 
 export const settingsRouter = Router();
 
@@ -453,8 +454,7 @@ settingsRouter.delete(
  * sang tháng trước. Đã tái hiện: một đơn đặt lúc 03:00 ngày 01/09 giờ Việt Nam
  * đếm ra 0 thay vì 1.
  */
-const DAU_THANG_VN =
-  "(date_trunc('month', now() AT TIME ZONE 'Asia/Ho_Chi_Minh') AT TIME ZONE 'Asia/Ho_Chi_Minh')";
+// Định nghĩa chung ở server/moc-thoi-gian.ts — xem lý do ở đó.
 
 settingsRouter.get(
   "/usage",

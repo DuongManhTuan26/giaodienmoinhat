@@ -2,7 +2,8 @@ import { Router } from "express";
 import { query, queryOne } from "../db.js";
 import { requireAuth } from "../auth.js";
 import { AppError, requireString, route } from "../http.js";
-import { taoDon } from "../services/orders.js";
+import { gopVaoTongChi, taoDon } from "../services/orders.js";
+import { DAU_NGAY_VN, DAU_THANG_VN } from "../moc-thoi-gian.js";
 
 export const ordersRouter = Router();
 
@@ -42,12 +43,45 @@ ordersRouter.get(
       params
     );
 
+    /*
+     * Bốn ô số ở đầu trang Đơn hàng trước đây là số bịa cứng trong giao diện:
+     * "ĐƠN HÔM NAY 7", "ĐANG GIAO 12", "DOANH THU THÁNG 48.500.000đ", kèm
+     * "+3 so với hôm qua" và "+18% so với tháng trước". Đã dựng lại trên máy:
+     * shop có ĐÚNG 0 đơn mà trang vẫn hiện nguyên bốn con số đó, trong khi
+     * ngay dòng trên nó lại ghi đúng "0 ĐƠN HÔM NAY". Chủ shop nhìn vào tưởng
+     * đang có gần 50 triệu doanh thu.
+     *
+     * Đếm đủ cả 'confirmed' và 'cancelled' luôn: thiếu 'confirmed' thì cộng
+     * bốn ô lại không ra tổng, đơn đã xác nhận biến mất khỏi mọi bảng đếm.
+     *
+     * Mốc ngày và mốc tháng lấy theo giờ Việt Nam, không phải giờ GMT của
+     * database — xem server/moc-thoi-gian.ts.
+     */
     const summary = await queryOne(
       `SELECT COUNT(*)::int                                          AS total,
               COUNT(*) FILTER (WHERE status = 'pending')::int        AS pending,
+              COUNT(*) FILTER (WHERE status = 'confirmed')::int      AS confirmed,
               COUNT(*) FILTER (WHERE status = 'shipping')::int       AS shipping,
               COUNT(*) FILTER (WHERE status = 'completed')::int      AS completed,
-              COALESCE(SUM(total) FILTER (WHERE status <> 'cancelled'), 0) AS revenue
+              COUNT(*) FILTER (WHERE status = 'cancelled')::int      AS cancelled,
+              COALESCE(SUM(total) FILTER (WHERE status <> 'cancelled'), 0) AS revenue,
+
+              COUNT(*) FILTER (
+                WHERE created_at >= ${DAU_NGAY_VN})::int             AS today_count,
+              COALESCE(SUM(total) FILTER (
+                WHERE created_at >= ${DAU_NGAY_VN}
+                  AND status <> 'cancelled'), 0)                     AS today_revenue,
+              COUNT(*) FILTER (
+                WHERE created_at >= ${DAU_NGAY_VN} - interval '1 day'
+                  AND created_at <  ${DAU_NGAY_VN})::int             AS yesterday_count,
+
+              COALESCE(SUM(total) FILTER (
+                WHERE created_at >= ${DAU_THANG_VN}
+                  AND status <> 'cancelled'), 0)                     AS month_revenue,
+              COALESCE(SUM(total) FILTER (
+                WHERE created_at >= ${DAU_THANG_VN} - interval '1 month'
+                  AND created_at <  ${DAU_THANG_VN}
+                  AND status <> 'cancelled'), 0)                     AS last_month_revenue
          FROM orders WHERE user_id = $1`,
       [req.user!.id]
     );
@@ -128,13 +162,22 @@ ordersRouter.patch(
     if (fields.length === 0) throw new AppError("Không có thông tin nào để cập nhật");
 
     /*
-     * Huỷ đơn phải trừ lại tổng chi của khách.
+     * Tổng chi của khách phải đi theo đơn, kể cả khi chỉ sửa số lượng hay giá.
      *
-     * Đã dựng lại: lên đơn 360.000 thì khách thành "1 đơn · 360.000"; huỷ đơn
-     * xong vẫn y nguyên "1 đơn · 360.000". Bộ đếm chỉ có đường cộng, không có
-     * đường trừ — đơn huỷ bao nhiêu lần thì khách vẫn mang tiếng đã mua.
+     * Đã dựng lại hai lần, cả hai đều sai tiền thật:
      *
-     * Bỏ huỷ thì cộng lại, để hai chiều luôn khớp nhau.
+     *  - Lên đơn 2 chiếc 360.000 → khách "đã chi 360.000". Chủ shop sửa thành
+     *    5 chiếc → đơn thành 900.000 nhưng khách vẫn mang con số 360.000 cũ.
+     *
+     *  - Tệ hơn: khách đó còn một đơn CŨ 2.000.000 đã mua xong. Sửa 2 → 5 rồi
+     *    huỷ đơn mới thì phần trừ lấy tổng HIỆN TẠI (900.000) trừ vào một số
+     *    dư chỉ từng được cộng 360.000 → khách còn 1.460.000 thay vì
+     *    2.000.000. Mất trắng 540.000 của một đơn đã thanh toán.
+     *
+     * Cách tính đúng: một đơn góp vào tổng chi đúng bằng `total` của nó khi
+     * chưa huỷ, và bằng 0 khi đã huỷ. Lấy phần góp SAU trừ phần góp TRƯỚC rồi
+     * cộng chênh lệch vào khách — một công thức lo hết mọi trường hợp: sửa số
+     * lượng, sửa giá, huỷ, bỏ huỷ, hay vừa sửa vừa huỷ trong cùng một lần.
      */
     const truoc = await queryOne<{
       status: string;
@@ -154,19 +197,24 @@ ordersRouter.patch(
 
     if (!updated) throw new AppError("Không tìm thấy đơn hàng", 404);
 
-    const sau = (updated as { status?: string }).status;
-    if (truoc.customer_id && sau && sau !== truoc.status) {
-      const huyCu = truoc.status === "cancelled";
-      const huyMoi = sau === "cancelled";
-      if (huyCu !== huyMoi) {
-        const dau = huyMoi ? -1 : 1;
+    const sau = updated as { status?: string; total?: string | number };
+    if (truoc.customer_id) {
+      const g1 = gopVaoTongChi(truoc.status, Number(truoc.total));
+      const g2 = gopVaoTongChi(
+        sau.status ?? truoc.status,
+        Number(sau.total ?? truoc.total)
+      );
+      const lechDon = g2.don - g1.don;
+      const lechTien = g2.tien - g1.tien;
+
+      if (lechDon !== 0 || lechTien !== 0) {
         await query(
           `UPDATE customers
               SET total_orders = GREATEST(0, total_orders + $2),
                   total_spent  = GREATEST(0, total_spent + $3),
                   updated_at   = now()
             WHERE id = $1`,
-          [truoc.customer_id, dau, dau * Number(truoc.total)]
+          [truoc.customer_id, lechDon, lechTien]
         );
       }
     }

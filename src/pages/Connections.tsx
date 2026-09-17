@@ -3,6 +3,9 @@ import { clsx } from 'clsx';
 import { api, ApiError, type Platform, type SocialAccount } from '../lib/api';
 import { useActivePage } from '../lib/ActivePage';
 
+// Mỗi lượt kết nối chọn một trang. Chưa phải hạn mức theo gói.
+const MOI_LUOT_MOT_TRANG = 1;
+
 export default function Connections() {
   const { reload: reloadActivePages } = useActivePage();
 
@@ -1242,7 +1245,7 @@ export default function Connections() {
                             checked={selectedPages.includes(page.id)}
                             onChange={(e) => {
                               if (e.target.checked) {
-                                if (selectedPages.length < 1) {
+                                if (selectedPages.length < MOI_LUOT_MOT_TRANG) {
                                   setSelectedPages([...selectedPages, page.id]);
                                 }
                               } else {
@@ -1260,14 +1263,27 @@ export default function Connections() {
                       <span className="text-on-surface-variant">Đã chọn: </span>
                       <span className="font-bold text-on-surface">{selectedPages.length} {selectedPlatform.selectionLabel?.toLowerCase()}</span>
                     </div>
-                    {selectedPages.length >= 1 ? (
-                      <div className="text-sm font-medium text-orange-400 flex items-center gap-1.5">
+                    {/*
+                      * Nói đúng thứ đang thật sự xảy ra.
+                      *
+                      * Trước đây chỗ này ghi "Gói của bạn còn 1 lượt kết nối" /
+                      * "Gói của bạn đã hết lượt" — cả hai đều gắn cứng số 1 và
+                      * chẳng liên quan gì tới gói dịch vụ. Máy chủ hiện KHÔNG
+                      * chặn theo gói; con số 1 ở đây chỉ là mỗi lượt kết nối
+                      * chọn một trang. Hứa theo gói trong khi không có gì chặn
+                      * là nói sai với người trả tiền.
+                      *
+                      * Khi nào hạn mức theo gói được thực thi ở máy chủ thì
+                      * thay MOI_LUOT_MOT_TRANG bằng số còn lại thật của gói.
+                      */}
+                    {selectedPages.length >= MOI_LUOT_MOT_TRANG ? (
+                      <div className="text-sm font-medium text-on-surface-variant flex items-center gap-1.5">
                         <span className="material-symbols-outlined text-[16px]">info</span>
-                        Gói của bạn đã hết lượt
+                        Muốn thêm trang nữa thì kết nối thêm một lượt
                       </div>
                     ) : (
                       <div className="text-sm font-medium text-on-surface-variant">
-                        Gói của bạn còn <span className="text-on-surface font-bold">1</span> lượt kết nối
+                        Mỗi lượt kết nối chọn <span className="text-on-surface font-bold">{MOI_LUOT_MOT_TRANG}</span> trang
                       </div>
                     )}
                   </div>

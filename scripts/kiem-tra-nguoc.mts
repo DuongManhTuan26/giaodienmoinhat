@@ -145,7 +145,7 @@ const DUC: PhepDuc[] = [
   },
   {
     ten: "trả mốc đầu tháng về giờ database",
-    tep: "server/routes/settings.ts",
+    tep: "server/moc-thoi-gian.ts",
     tim: "(date_trunc('month', now() AT TIME ZONE 'Asia/Ho_Chi_Minh') AT TIME ZONE 'Asia/Ho_Chi_Minh')",
     thay: "date_trunc('month', now())",
   },
@@ -709,6 +709,111 @@ const DUC: PhepDuc[] = [
     tep: "server/routes/connections.ts",
     tim: "`SELECT user_id FROM pending_connections\n            WHERE connect_state = $1 AND expires_at > now()`,\n          [maBiMat]",
     thay: "`SELECT id AS user_id FROM users WHERE profile_ref = $1`,\n          [profileId]",
+  },
+  /*
+   * Bảy chỗ nói sai với chủ shop. Đục lại đúng lỗ cũ.
+   */
+  {
+    ten: "tổng chi của khách chỉ đổi khi đổi trạng thái, mặc kệ sửa số lượng",
+    tep: "server/routes/orders.ts",
+    tim: "      if (lechDon !== 0 || lechTien !== 0) {",
+    thay: "      if (truoc.status !== (sau.status ?? truoc.status)) {",
+  },
+  {
+    ten: "đơn đã huỷ vẫn tính vào tổng chi của khách",
+    tep: "server/services/orders.ts",
+    tim: '  if (trangThai === "cancelled") return { don: 0, tien: 0 };',
+    thay: "",
+  },
+  {
+    ten: "trả lại số bịa 'ĐANG GIAO 12' ở trang Đơn hàng",
+    tep: "src/pages/Orders.tsx",
+    tim: '<span className="font-headline-sm text-3xl font-bold text-on-surface">{summary.shipping}</span>',
+    thay: '<span className="font-headline-sm text-3xl font-bold text-on-surface">12</span>',
+  },
+  {
+    ten: "trả lại doanh thu tháng bịa 48.500.000 đ",
+    tep: "src/pages/Orders.tsx",
+    tim: "{formatCurrency(summary.month_revenue)}",
+    thay: "48.500.000 đ",
+  },
+  {
+    ten: "kỳ trước bằng 0 vẫn hiện phần trăm",
+    tep: "src/pages/Orders.tsx",
+    tim: "    if (!truoc) return null;",
+    thay: "",
+  },
+  {
+    ten: "đơn chưa có giá hiện '0 đ' như đơn được tặng",
+    tep: "src/pages/Orders.tsx",
+    tim: "        chuaCoGia: Number(order.total) === 0,",
+    thay: "        chuaCoGia: false,",
+  },
+  {
+    ten: "bảng đếm đơn bỏ sót trạng thái 'đã xác nhận'",
+    tep: "server/routes/orders.ts",
+    tim: "              COUNT(*) FILTER (WHERE status = 'confirmed')::int      AS confirmed,\n",
+    thay: "",
+  },
+  {
+    ten: "doanh thu tháng tính cả đơn đã huỷ",
+    tep: "server/routes/orders.ts",
+    tim: "                WHERE created_at >= ${DAU_THANG_VN}\n                  AND status <> 'cancelled'), 0)                     AS month_revenue",
+    thay: "                WHERE created_at >= ${DAU_THANG_VN}), 0)           AS month_revenue",
+  },
+  {
+    ten: "cắt mốc ngày theo giờ database thay vì giờ Việt Nam",
+    tep: "server/moc-thoi-gian.ts",
+    tim: "\"(date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh') AT TIME ZONE 'Asia/Ho_Chi_Minh')\"",
+    thay: "\"date_trunc('day', now())\"",
+  },
+  {
+    ten: "tỷ lệ chốt kỳ trước quay lại gắn cứng 0",
+    tep: "server/routes/analytics.ts",
+    tim: "    const prevConversations = Number(previous?.conversations_count ?? 0);",
+    thay: "    const prevConversations = 0;",
+  },
+  {
+    ten: "ba bước hướng dẫn quay lại đếm bằng biến trong bộ nhớ",
+    tep: "src/pages/Onboarding.tsx",
+    tim: "export async function docTrangThaiBaBuoc",
+    thay: "const completedSteps = 0;\nexport async function docTrangThaiBaBuoc",
+  },
+  {
+    ten: "màn hình hoàn tất khẳng định cứng là đã kết nối kênh",
+    tep: "src/pages/SetupComplete.tsx",
+    tim: "{m.xong ? m.chuXong : m.chuChua}",
+    thay: 'Đã kết nối kênh bán hàng',
+  },
+  {
+    ten: "thanh menu lại chiếm chỗ cố định trên điện thoại",
+    tep: "src/App.tsx",
+    tim: 'className="flex-1 lg:ml-72 min-w-0',
+    thay: 'className="flex-1 ml-72',
+  },
+  {
+    ten: "thanh menu không còn trượt ra ngoài khi chưa mở",
+    tep: "src/components/Sidebar.tsx",
+    tim: "lg:translate-x-0 ${moKhung ? 'translate-x-0' : '-translate-x-full'}",
+    thay: "lg:translate-x-0",
+  },
+  {
+    ten: "ẩn hẳn thanh trên trên điện thoại, mất chỗ mở menu",
+    tep: "src/components/TopNavBar.tsx",
+    tim: "transition-all duration-200 flex justify-between items-center gap-2",
+    thay: "transition-all duration-200 hidden md:flex justify-between items-center gap-2",
+  },
+  {
+    ten: "hộp thư lại xếp hai cột cạnh nhau trên điện thoại",
+    tep: "src/pages/Inbox.tsx",
+    tim: "${xemChiTietDiDong ? 'hidden lg:flex' : 'flex'}",
+    thay: "flex",
+  },
+  {
+    ten: "hứa lại hạn mức theo gói mà máy chủ không giữ",
+    tep: "src/pages/Connections.tsx",
+    tim: "Muốn thêm trang nữa thì kết nối thêm một lượt",
+    thay: "Gói của bạn đã hết lượt",
   },
 ];
 

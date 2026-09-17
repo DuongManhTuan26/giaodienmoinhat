@@ -29,6 +29,20 @@ export default function Inbox() {
 
   const [activeTab, setActiveTab] = useState('Tất cả');
   const [selectedId, setSelectedId] = useState('');
+  /*
+   * Trên điện thoại chỉ đủ chỗ cho MỘT trong hai: danh sách hội thoại hoặc
+   * khung chat.
+   *
+   * Hộp thư xếp ba cột cạnh nhau, cộng lại tối thiểu 970px. Trên màn 375px
+   * thì khung chat bị cắt mất hơn nửa và cột hồ sơ khách nằm hẳn ngoài màn
+   * hình. Mà hộp thư là chỗ chủ shop mở nhiều nhất khi đang đi đường.
+   *
+   * Biến này chỉ có tác dụng dưới lg; từ lg trở lên ba cột vẫn nằm cạnh nhau
+   * như cũ. Nó phải tách khỏi selectedId vì danh sách TỰ chọn hội thoại đầu
+   * tiên — dựa vào selectedId thì mở hộp thư ra là nhảy thẳng vào một cuộc
+   * chat, không bao giờ nhìn thấy danh sách.
+   */
+  const [xemChiTietDiDong, setXemChiTietDiDong] = useState(false);
   const [search, setSearch] = useState('');
   const [showCopyToast, setShowCopyToast] = useState(false);
   const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
@@ -477,7 +491,7 @@ export default function Inbox() {
       <div className="flex-1 flex flex-row w-full h-full overflow-hidden">
         
         {/* Pane 1: Conversation List */}
-        <aside className="w-[320px] bg-surface-container-lowest border-r border-outline-variant/30 flex flex-col h-full flex-shrink-0 z-0">
+        <aside className={`w-full lg:w-[320px] bg-surface-container-lowest border-r border-outline-variant/30 flex-col h-full lg:flex-shrink-0 z-0 ${xemChiTietDiDong ? 'hidden lg:flex' : 'flex'}`}>
           <div className="p-3 border-b border-outline-variant/30 shrink-0">
             <div className="relative">
               <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant text-[18px]">search</span>
@@ -517,7 +531,7 @@ export default function Inbox() {
               return (
                 <div 
                   key={conv.id}
-                  onClick={() => setSelectedId(conv.id)}
+                  onClick={() => { setSelectedId(conv.id); setXemChiTietDiDong(true); }}
                   className={clsx(
                     "p-3 rounded-lg flex gap-3 transition-all cursor-pointer relative overflow-hidden group",
                     isSelected ? "bg-surface-container-high border-none shadow-sm" : "hover:bg-surface-container-low border border-transparent"
@@ -552,11 +566,19 @@ export default function Inbox() {
 
         {/* Pane 2: Chat Interface */}
         {selectedConv ? (
-          <section className="flex-1 flex flex-col h-full min-w-[350px] bg-background">
+          <section className={`flex-1 flex-col h-full min-w-0 lg:min-w-[350px] bg-background ${xemChiTietDiDong ? 'flex' : 'hidden lg:flex'}`}>
             {/* Header */}
             <div className="h-16 border-b border-outline-variant/30 bg-surface-container-lowest px-4 flex items-center justify-between shrink-0">
               {/* Customer Info */}
               <div className="flex items-center gap-3 overflow-hidden pr-4">
+                <button
+                  onClick={() => setXemChiTietDiDong(false)}
+                  title="Quay lại danh sách"
+                  aria-label="Quay lại danh sách"
+                  className="lg:hidden text-primary hover:bg-surface-container-highest/80 rounded-lg p-1 -ml-1 transition-colors flex items-center justify-center shrink-0"
+                >
+                  <span className="material-symbols-outlined">arrow_back</span>
+                </button>
                 <div className="w-10 h-10 rounded-full bg-surface-variant flex items-center justify-center font-bold text-on-surface shrink-0">
                   {selectedConv.customerInitial}
                 </div>
@@ -741,7 +763,7 @@ export default function Inbox() {
             </div>
           </section>
         ) : (
-          <section className="flex-1 flex flex-col h-full bg-background items-center justify-center text-on-surface-variant/50 min-w-[350px]">
+          <section className={`flex-1 flex-col h-full bg-background items-center justify-center text-on-surface-variant/50 min-w-0 lg:min-w-[350px] ${xemChiTietDiDong ? 'flex' : 'hidden lg:flex'}`}>
             <span className="material-symbols-outlined text-6xl mb-4 opacity-50">forum</span>
             <p className="text-sm font-medium">Chọn một cuộc trò chuyện để xem</p>
           </section>
@@ -749,7 +771,7 @@ export default function Inbox() {
 
         {/* Pane 3: Customer Info (Right Panel) */}
         {selectedConv && (
-          <aside className="w-[300px] bg-surface-container-lowest border-l border-outline-variant/30 flex flex-col h-full flex-shrink-0 z-0 overflow-y-auto no-scrollbar">
+          <aside className="w-[300px] bg-surface-container-lowest border-l border-outline-variant/30 hidden xl:flex flex-col h-full flex-shrink-0 z-0 overflow-y-auto no-scrollbar">
             <div className="flex-1 p-4 space-y-6">
               
               <div className="flex flex-col items-center text-center mt-2">

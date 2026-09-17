@@ -24,6 +24,11 @@ type AppState = 'loading' | 'auth' | 'onboarding' | 'setup_complete' | 'main';
 
 export default function App() {
   const [appState, setAppState] = useState<AppState>('loading');
+  /*
+   * Ngăn kéo menu trên điện thoại. Từ lg trở lên biến này không có tác dụng gì
+   * vì thanh menu luôn đứng cố định.
+   */
+  const [menuMo, setMenuMo] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
 
@@ -138,9 +143,14 @@ export default function App() {
   return (
     <ActivePageProvider>
     <div className="flex h-screen w-full bg-background">
-      <Sidebar onLogout={handleLogout} laQuanTri={user?.role === 'admin'} />
-      <div className="flex-1 ml-72 flex flex-col h-screen relative">
-        <TopNavBar user={user} avatarUrl={avatarUrl} />
+      <Sidebar
+        onLogout={handleLogout}
+        laQuanTri={user?.role === 'admin'}
+        moKhung={menuMo}
+        onDong={() => setMenuMo(false)}
+      />
+      <div className="flex-1 lg:ml-72 min-w-0 flex flex-col h-screen relative">
+        <TopNavBar user={user} avatarUrl={avatarUrl} onMoMenu={() => setMenuMo(true)} />
         <main className="flex-1 overflow-y-auto custom-scrollbar pt-16">
           {/*
             Lỗi ở MỘT màn hình không được kéo đổ cả ứng dụng thành màn hình

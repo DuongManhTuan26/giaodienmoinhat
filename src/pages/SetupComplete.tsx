@@ -1,6 +1,32 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { docTrangThaiBaBuoc, type TrangThaiBaBuoc } from './Onboarding';
 
+/*
+ * Màn hình chốt sau ba bước.
+ *
+ * Bản trước in cứng ba dấu tích xanh: "Đã kết nối kênh bán hàng", "AI đã được
+ * cấu hình và thử nghiệm", "Telegram đã kết nối" — hiện y như vậy kể cả khi
+ * chủ shop chưa làm gì. Giờ đọc trạng thái thật; bước nào chưa xong thì nói
+ * thẳng là chưa xong.
+ */
 export default function SetupComplete({ onFinish }: { onFinish: () => void }) {
+  const [trangThai, setTrangThai] = useState<TrangThaiBaBuoc | null>(null);
+
+  useEffect(() => {
+    let con = true;
+    void docTrangThaiBaBuoc()
+      .then((t) => { if (con) setTrangThai(t); })
+      .catch(() => { if (con) setTrangThai({ kenh: false, taiLieu: false, telegram: false }); });
+    return () => { con = false; };
+  }, []);
+
+  const muc = [
+    { xong: trangThai?.kenh,     chuXong: 'Đã kết nối kênh bán hàng',      chuChua: 'Chưa kết nối kênh bán hàng nào' },
+    { xong: trangThai?.taiLieu,  chuXong: 'Đã nạp tài liệu cho AI bán hàng', chuChua: 'AI chưa có tài liệu sản phẩm nào' },
+    { xong: trangThai?.telegram, chuXong: 'Đã kết nối Telegram',           chuChua: 'Chưa kết nối Telegram' },
+  ];
+  const duXong = muc.every((m) => m.xong);
+
   return (
     <div className="h-screen w-full flex items-center justify-center bg-background relative overflow-hidden p-4">
       {/* Background glow - using green tint for success */}
@@ -13,22 +39,25 @@ export default function SetupComplete({ onFinish }: { onFinish: () => void }) {
           <span className="material-symbols-outlined text-[#10b981] text-[48px]">check</span>
         </div>
 
-        <h2 className="font-display-lg text-on-surface mb-8">Mọi thứ đã sẵn sàng</h2>
+        <h2 className="font-display-lg text-on-surface mb-8">
+          {duXong ? 'Mọi thứ đã sẵn sàng' : 'Bạn vào dùng được rồi'}
+        </h2>
 
         {/* List of completed items */}
         <div className="flex flex-col gap-3 w-full text-left mb-xl">
-          <div className="flex items-center gap-3 bg-surface-container p-4 rounded-lg border border-[#10b981]/20">
-            <span className="material-symbols-outlined text-[#10b981]">check_circle</span>
-            <span className="font-body-lg text-on-surface font-bold">Đã kết nối kênh bán hàng</span>
-          </div>
-          <div className="flex items-center gap-3 bg-surface-container p-4 rounded-lg border border-[#10b981]/20">
-            <span className="material-symbols-outlined text-[#10b981]">check_circle</span>
-            <span className="font-body-lg text-on-surface font-bold">AI đã được cấu hình và thử nghiệm</span>
-          </div>
-          <div className="flex items-center gap-3 bg-surface-container p-4 rounded-lg border border-[#10b981]/20">
-            <span className="material-symbols-outlined text-[#10b981]">check_circle</span>
-            <span className="font-body-lg text-on-surface font-bold">Telegram đã kết nối</span>
-          </div>
+          {muc.map((m, i) => (
+            <div
+              key={i}
+              className={`flex items-center gap-3 bg-surface-container p-4 rounded-lg border ${m.xong ? 'border-[#10b981]/20' : 'border-outline-variant'}`}
+            >
+              <span className={`material-symbols-outlined ${m.xong ? 'text-[#10b981]' : 'text-on-surface-variant'}`}>
+                {m.xong ? 'check_circle' : 'radio_button_unchecked'}
+              </span>
+              <span className={`font-body-lg font-bold ${m.xong ? 'text-on-surface' : 'text-on-surface-variant'}`}>
+                {m.xong ? m.chuXong : m.chuChua}
+              </span>
+            </div>
+          ))}
         </div>
 
         <button 
@@ -39,7 +68,11 @@ export default function SetupComplete({ onFinish }: { onFinish: () => void }) {
         </button>
 
         <div className="w-full border border-outline-variant p-4 rounded-lg bg-surface-container-low text-center">
-          <p className="font-body-md text-on-surface-variant text-sm">Lưu ý: Tự động trả lời hiện đang TẮT. Bạn có thể bật khi đã sẵn sàng.</p>
+          <p className="font-body-md text-on-surface-variant text-sm">
+            {duXong
+              ? 'Lưu ý: Tự động trả lời hiện đang TẮT. Bạn có thể bật khi đã sẵn sàng.'
+              : 'Bước nào còn thiếu ở trên, làm lúc nào cũng được trong menu bên trái. Tự động trả lời hiện đang TẮT.'}
+          </p>
         </div>
       </div>
     </div>

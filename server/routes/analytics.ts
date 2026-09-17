@@ -76,7 +76,11 @@ analyticsRouter.get(
          (SELECT COUNT(*) FROM messages
            WHERE user_id = $1 AND sender_type = 'ai'
              AND created_at >= now() - ($2 || ' days')::interval * 2
-             AND created_at <  now() - ($2 || ' days')::interval)          AS ai_messages`,
+             AND created_at <  now() - ($2 || ' days')::interval)          AS ai_messages,
+         (SELECT COUNT(*) FROM conversations
+           WHERE user_id = $1
+             AND created_at >= now() - ($2 || ' days')::interval * 2
+             AND created_at <  now() - ($2 || ' days')::interval)          AS conversations_count`,
       [userId, String(days)]
     );
 
@@ -84,7 +88,16 @@ analyticsRouter.get(
     const orders = Number(stats?.orders_count ?? 0);
     const closeRate = conversations > 0 ? (orders / conversations) * 100 : 0;
 
-    const prevConversations = 0; // kỳ trước không cần chi tiết tới mức này
+    /*
+     * Tỷ lệ chốt của kỳ trước phải đếm thật.
+     *
+     * Trước đây chỗ này gắn cứng 0 rồi viết `prevConversations ? null : null`
+     * — cả hai nhánh đều null, nên ô "tỷ lệ chốt" là ô DUY NHẤT trong trang
+     * không bao giờ hiện được tăng hay giảm, dù có đủ dữ liệu cả hai kỳ.
+     */
+    const prevConversations = Number(previous?.conversations_count ?? 0);
+    const prevOrders = Number(previous?.orders_count ?? 0);
+    const prevCloseRate = prevConversations > 0 ? (prevOrders / prevConversations) * 100 : 0;
     const percentChange = (current: number, before: number): number | null => {
       // Kỳ trước bằng 0 thì không có gốc để so sánh; trả null để giao diện
       // ẩn phần trăm thay vì hiện +100% gây hiểu nhầm.
@@ -161,7 +174,7 @@ analyticsRouter.get(
           Number(stats?.ai_messages ?? 0),
           Number(previous?.ai_messages ?? 0)
         ),
-        closeRate: prevConversations ? null : null,
+        closeRate: percentChange(closeRate, prevCloseRate),
       },
       series: series.rows,
       sources: sources.rows.map((row) => ({

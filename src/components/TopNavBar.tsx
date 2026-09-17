@@ -90,10 +90,12 @@ function DoiMatKhau({ onClose }: { onClose: () => void }) {
   );
 }
 
-export default function TopNavBar({ user, avatarUrl }: {
+export default function TopNavBar({ user, avatarUrl, onMoMenu }: {
   user?: User | null;
   /** Ảnh đại diện của Fanpage đang hoạt động, lấy từ kênh đã kết nối. */
   avatarUrl?: string | null;
+  /** Mở ngăn kéo menu. Chỉ dùng dưới lg, nơi menu không đứng cố định. */
+  onMoMenu?: () => void;
 }) {
   const location = useLocation();
   const [menuMo, setMenuMo] = useState(false);
@@ -141,10 +143,23 @@ export default function TopNavBar({ user, avatarUrl }: {
     }
   };
 
+  /*
+   * Trên điện thoại thanh này trước đây bị ẩn hẳn (hidden md:flex), nên không
+   * còn chỗ nào để mở menu — mà menu thì đã trượt ra ngoài màn hình. Giờ luôn
+   * hiện, và dưới lg có thêm nút mở ngăn kéo.
+   */
   return (
-    <nav className="fixed top-0 right-0 w-[calc(100%-288px)] z-40 bg-surface shadow-[0_4px_30px_rgba(0,229,255,0.1)] border-b border-primary/20 transition-all duration-200 hidden md:flex justify-between items-center px-margin py-base h-16">
-      <div className="flex items-center gap-md">
-        <h1 className="font-headline-lg-mobile text-headline-lg-mobile font-bold text-primary">{getPageTitle()}</h1>
+    <nav className="fixed top-0 right-0 w-full lg:w-[calc(100%-288px)] z-40 bg-surface shadow-[0_4px_30px_rgba(0,229,255,0.1)] border-b border-primary/20 transition-all duration-200 flex justify-between items-center gap-2 px-4 sm:px-margin py-base h-16">
+      <div className="flex items-center gap-2 sm:gap-md min-w-0">
+        <button
+          onClick={onMoMenu}
+          title="Mở menu"
+          aria-label="Mở menu"
+          className="lg:hidden text-primary hover:bg-surface-container-highest/80 rounded-lg p-2 -ml-1 transition-colors flex items-center justify-center shrink-0"
+        >
+          <span className="material-symbols-outlined">menu</span>
+        </button>
+        <h1 className="font-headline-lg-mobile text-headline-lg-mobile font-bold text-primary truncate">{getPageTitle()}</h1>
         <div className="hidden lg:flex items-center gap-base ml-lg">
           <span className="font-mono text-label-sm px-3 py-1 rounded-full bg-primary/10 text-primary border border-primary/30 font-bold tracking-wide">
             TỰ ĐỘNG HÓA THỜI GIAN THỰC

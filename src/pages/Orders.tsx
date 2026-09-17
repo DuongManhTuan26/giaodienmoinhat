@@ -51,7 +51,11 @@ export default function Orders() {
   const [openDropdownId, setOpenDropdownId] = useState<string | null>(null);
 
   const [orders, setOrders] = useState<Order[]>([]);
-  const [summary, setSummary] = useState({ total: 0, pending: 0, shipping: 0, completed: 0, revenue: 0 });
+  const [summary, setSummary] = useState({
+    total: 0, pending: 0, confirmed: 0, shipping: 0, completed: 0, cancelled: 0, revenue: 0,
+    today_count: 0, today_revenue: 0, yesterday_count: 0,
+    month_revenue: 0, last_month_revenue: 0,
+  });
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState('');
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -95,6 +99,16 @@ export default function Orders() {
         productName: order.product,
         quantity: order.quantity,
         value: formatCurrency(order.total),
+        /*
+         * Đơn 0đ là đơn AI KHÔNG xác nhận được giá.
+         *
+         * AI chỉ được lấy giá khớp với tài liệu shop; con số khách tự nói ra
+         * thì không tính. Lúc đó đơn vẫn lên để khách không bị bỏ rơi, nhưng
+         * giá để trống chờ chủ shop điền. Chủ shop có nhận tin Telegram, song
+         * nếu không mở Telegram thì nhìn vào bảng chỉ thấy "0 đ" như thể đơn
+         * được tặng — nên phải nói thẳng ra ở đây.
+         */
+        chuaCoGia: Number(order.total) === 0,
         source: order.closed_by === 'ai' ? 'AI chốt' : 'Nhân viên chốt',
         status: STATUS_TO_LABEL[order.status],
         address: order.address || 'Chưa có địa chỉ',
@@ -105,6 +119,33 @@ export default function Orders() {
     }),
     [orders]
   );
+
+  /*
+   * Hai dòng so sánh dưới ô số.
+   *
+   * Trước đây là chữ chết: "+3 so với hôm qua" và "+18% so với tháng trước"
+   * hiện y nguyên kể cả khi shop chưa có đơn nào.
+   *
+   * Kỳ trước bằng 0 thì KHÔNG so sánh — không có gốc để chia, mà hiện "+100%"
+   * cho đơn đầu tiên trong đời thì vô nghĩa. Không có gì để nói thì không nói.
+   */
+  const soSanhHomQua = useMemo(() => {
+    const homQua = summary.yesterday_count;
+    const homNay = summary.today_count;
+    if (homQua === 0 && homNay === 0) return null;
+    const lech = homNay - homQua;
+    if (lech === 0) return { tang: true, chu: 'Bằng hôm qua' };
+    return { tang: lech > 0, chu: `${lech > 0 ? '+' : ''}${lech} so với hôm qua` };
+  }, [summary.today_count, summary.yesterday_count]);
+
+  const soSanhThangTruoc = useMemo(() => {
+    const truoc = Number(summary.last_month_revenue);
+    const nay = Number(summary.month_revenue);
+    if (!truoc) return null;
+    const phanTram = Math.round(((nay - truoc) / truoc) * 100);
+    if (phanTram === 0) return { tang: true, chu: 'Bằng tháng trước' };
+    return { tang: phanTram > 0, chu: `${phanTram > 0 ? '+' : ''}${phanTram}% so với tháng trước` };
+  }, [summary.month_revenue, summary.last_month_revenue]);
 
   const filteredOrders = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -247,14 +288,16 @@ export default function Orders() {
           <div>
             <h3 className="font-mono text-[11px] font-bold tracking-wider text-on-surface-variant uppercase mb-1">ĐƠN HÔM NAY</h3>
             <div className="flex items-baseline gap-2">
-              <span className="font-headline-sm text-3xl font-bold text-on-surface">7</span>
+              <span className="font-headline-sm text-3xl font-bold text-on-surface">{summary.today_count}</span>
             </div>
-            <p className="text-xs text-on-surface-variant mt-1 font-medium">{`Tổng ${formatCurrency(summary.revenue)}`}</p>
+            <p className="text-xs text-on-surface-variant mt-1 font-medium">{`Tổng ${formatCurrency(summary.today_revenue)}`}</p>
           </div>
-          <div className="flex items-center gap-1.5 text-xs font-bold text-green-400 bg-green-400/10 self-start px-2 py-1 rounded-md mt-auto">
-            <span className="material-symbols-outlined text-[14px]">trending_up</span>
-            +3 so với hôm qua
-          </div>
+          {soSanhHomQua && (
+            <div className={`flex items-center gap-1.5 text-xs font-bold self-start px-2 py-1 rounded-md mt-auto ${soSanhHomQua.tang ? 'text-green-400 bg-green-400/10' : 'text-orange-400 bg-orange-400/10'}`}>
+              <span className="material-symbols-outlined text-[14px]">{soSanhHomQua.tang ? 'trending_up' : 'trending_down'}</span>
+              {soSanhHomQua.chu}
+            </div>
+          )}
         </div>
 
         {/* Card 2 */}
@@ -281,7 +324,7 @@ export default function Orders() {
           <div>
             <h3 className="font-mono text-[11px] font-bold tracking-wider text-on-surface-variant uppercase mb-1">ĐANG GIAO</h3>
             <div className="flex items-baseline gap-2">
-              <span className="font-headline-sm text-3xl font-bold text-on-surface">12</span>
+              <span className="font-headline-sm text-3xl font-bold text-on-surface">{summary.shipping}</span>
             </div>
             <p className="text-xs text-on-surface-variant mt-1 font-medium">Đang trên đường tới khách</p>
           </div>
@@ -293,13 +336,15 @@ export default function Orders() {
           <div>
             <h3 className="font-mono text-[11px] font-bold tracking-wider text-on-surface-variant uppercase mb-1">DOANH THU THÁNG</h3>
             <div className="flex items-baseline gap-2">
-              <span className="font-headline-sm text-2xl font-bold text-on-surface">48.500.000 đ</span>
+              <span className="font-headline-sm text-2xl font-bold text-on-surface">{formatCurrency(summary.month_revenue)}</span>
             </div>
           </div>
-          <div className="flex items-center gap-1.5 text-xs font-bold text-green-400 bg-green-400/10 self-start px-2 py-1 rounded-md mt-auto">
-            <span className="material-symbols-outlined text-[14px]">trending_up</span>
-            +18% so với tháng trước
-          </div>
+          {soSanhThangTruoc && (
+            <div className={`flex items-center gap-1.5 text-xs font-bold self-start px-2 py-1 rounded-md mt-auto ${soSanhThangTruoc.tang ? 'text-green-400 bg-green-400/10' : 'text-orange-400 bg-orange-400/10'}`}>
+              <span className="material-symbols-outlined text-[14px]">{soSanhThangTruoc.tang ? 'trending_up' : 'trending_down'}</span>
+              {soSanhThangTruoc.chu}
+            </div>
+          )}
         </div>
       </div>
 
@@ -394,7 +439,17 @@ export default function Orders() {
                       </div>
                     </td>
                     <td className="py-4 px-5 text-right">
-                      <span className="text-sm font-bold text-on-surface whitespace-nowrap">{order.value}</span>
+                      {order.chuaCoGia ? (
+                        <span
+                          title="AI không xác nhận được giá từ tài liệu của bạn. Bấm vào đơn để điền giá đúng."
+                          className="inline-flex items-center gap-1 text-sm font-bold text-orange-400 whitespace-nowrap"
+                        >
+                          <span className="material-symbols-outlined text-[16px]">error</span>
+                          Chưa có giá
+                        </span>
+                      ) : (
+                        <span className="text-sm font-bold text-on-surface whitespace-nowrap">{order.value}</span>
+                      )}
                     </td>
                     <td className="py-4 px-5 text-center">
                       <span className={clsx(
@@ -574,7 +629,13 @@ export default function Orders() {
                   </table>
                   <div className="p-4 border-t border-outline-variant bg-surface-container-high flex justify-between items-center">
                     <span className="text-base font-bold text-on-surface">TỔNG CỘNG</span>
-                    <span className="text-xl font-bold text-primary">{selectedOrder.value}</span>
+                    {selectedOrder.chuaCoGia ? (
+                      <span className="text-xl font-bold text-orange-400">
+                        Chưa có giá — AI không tìm thấy con số này trong tài liệu của bạn
+                      </span>
+                    ) : (
+                      <span className="text-xl font-bold text-primary">{selectedOrder.value}</span>
+                    )}
                   </div>
                 </div>
               </div>

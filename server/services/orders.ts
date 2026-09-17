@@ -51,6 +51,21 @@ export async function soDonTiepTheo(
   return `${prefix}-${String((kq.rows[0]?.n ?? 0) + 1).padStart(4, "0")}`;
 }
 
+/*
+ * Một đơn góp bao nhiêu vào bộ đếm của khách.
+ *
+ * Đơn chưa huỷ góp đúng số tiền của nó; đơn đã huỷ góp 0. Mọi chỗ động vào
+ * total_orders / total_spent đều phải đi qua đây, để sửa số lượng, sửa giá,
+ * huỷ và bỏ huỷ luôn dùng chung một cách tính.
+ */
+export function gopVaoTongChi(
+  trangThai: string,
+  tong: number
+): { don: number; tien: number } {
+  if (trangThai === "cancelled") return { don: 0, tien: 0 };
+  return { don: 1, tien: Number.isFinite(tong) ? tong : 0 };
+}
+
 export async function taoDon(d: DuLieuDon): Promise<Record<string, unknown>> {
   if (!d.product.trim()) throw new AppError("Đơn phải có tên sản phẩm");
   if (!Number.isFinite(d.quantity) || d.quantity < 1) {
