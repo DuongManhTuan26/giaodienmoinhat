@@ -1932,6 +1932,64 @@ kiem("trang quảng cáo", "ô chọn kỳ có nối thật và nạp lại theo
 }
 
 // ---------------------------------------------------------------------------
+// 45. Tài khoản mới sinh ra với bộ não TRỐNG
+//
+// Trước đây mỗi tài khoản mới được nhét sẵn bốn lời dặn mẫu. Hậu quả thấy tận
+// mắt: tài khoản gắn Trang bán kem dưỡng tay mà vai trò AI vẫn là "chuyên viên
+// tư vấn tài chính" — chữ mặc định nằm đó nhiều tháng, không ai sửa vì nhìn
+// qua tưởng đã cài rồi. Chỉ có chủ shop mới biết shop mình bán gì.
+//
+// Ví dụ chỉ được viết MỜ trong ô nhập: chỉ đường, không thành nội dung.
+// ---------------------------------------------------------------------------
+{
+  const nguonTaoTk = fs.readFileSync(path.join(GOC, "server/services/tai-khoan.ts"), "utf8");
+  const maTaoTk = boChuThich(nguonTaoTk);
+  for (const loai of ["sales", "content", "ads", "analytics"]) {
+    kiem("bộ não trống", `tài khoản mới: vai trò '${loai}' để trống`,
+      new RegExp(`\\{ kind: "${loai}", prompt: "" \\}`).test(maTaoTk), true);
+  }
+  kiem("bộ não trống", "không còn lời dặn mẫu nào nhét sẵn",
+    /Bạn là (nhân viên bán hàng|chuyên gia quảng cáo|chuyên viên|người viết)/.test(maTaoTk), false);
+  kiem("bộ não trống", "vẫn tạo đủ bốn dòng để giao diện có chỗ ghi",
+    (maTaoTk.match(/\{ kind: "\w+", prompt: "" \}/g) ?? []).length, 4);
+  /*
+   * Luật an toàn KHÔNG phải nội dung huấn luyện.
+   *
+   * Chuyển người khi khách phàn nàn hay đòi gặp người thật là chốt bảo vệ, bỏ
+   * đi thì tài khoản mới chạy trần trụi. Giữ nguyên, có chủ đích.
+   */
+  kiem("bộ não trống", "luật an toàn vẫn bật sẵn cho tài khoản mới",
+    /\{ key: "ask_human", enabled: true \}/.test(maTaoTk) &&
+      /\{ key: "complaint", enabled: true \}/.test(maTaoTk), true);
+
+  const nguonKichBan = fs.readFileSync(path.join(GOC, "src/pages/AutoScripts.tsx"), "utf8");
+  kiem("bộ não trống", "ô nhập vai trò có ví dụ viết mờ",
+    /placeholder=\{[\s\S]{0,400}?Ví dụ: Bạn là nhân viên bán hàng/.test(nguonKichBan), true);
+  kiem("bộ não trống", "chưa viết gì thì nói rõ AI sẽ chỉ chào hỏi chung chung",
+    /!systemPrompt\.trim\(\) &&[\s\S]{0,400}?chỉ chào hỏi chung chung/.test(nguonKichBan), true);
+}
+
+// --- Kịch trần thì báo kịch trần, không báo "lỗi hệ thống" -------------------
+{
+  const nguonHttp = fs.readFileSync(path.join(GOC, "server/http.ts"), "utf8");
+  kiem("hạn mức Trang", "nhận ra mã kịch trần của nhà cung cấp",
+    /error\.code === "PROFILE_LIMIT_EXCEEDED"/.test(nguonHttp), true);
+  kiem("hạn mức Trang", "nói thẳng lý do, không gộp thành lỗi hệ thống",
+    /Đã dùng hết số Trang cho phép/.test(nguonHttp), true);
+  kiem("hạn mức Trang", "xử lý trước chỗ gộp 403 thành 502",
+    nguonHttp.indexOf('PROFILE_LIMIT_EXCEEDED') < nguonHttp.indexOf('error.status === 401 || error.status === 403'),
+    true);
+  /*
+   * Mình KHÔNG tự đặt trần riêng — nhà cung cấp cho tới đâu thì cho tới đó.
+   * Có một con số trần cứng trong mã là lúc nào đó nó lệch với thực tế.
+   */
+  kiem("hạn mức Trang", "không tự đặt trần số hồ sơ trong mã",
+    /MAX_PROFILES|SO_HO_SO_TOI_DA|maxProfiles/.test(
+      boChuThich(fs.readFileSync(path.join(GOC, "server/services/accounts.ts"), "utf8"))
+    ), false);
+}
+
+// ---------------------------------------------------------------------------
 console.log(`\nĐã kiểm ${tong} điểm.`);
 if (hong === 0) {
   console.log("Tất cả đều đạt.\n");

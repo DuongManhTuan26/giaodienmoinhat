@@ -884,6 +884,30 @@ const DUC: PhepDuc[] = [
     tim: '  if (lastMessage.sender_type !== "customer") {',
     thay: "  if (false) {",
   },
+  {
+    ten: "nhét lại lời dặn mẫu vào tài khoản mới",
+    tep: "server/services/tai-khoan.ts",
+    tim: '  { kind: "sales", prompt: "" },',
+    thay: '  { kind: "sales", prompt: "Bạn là nhân viên bán hàng của shop, xưng em." },',
+  },
+  {
+    ten: "bỏ luật an toàn khỏi tài khoản mới",
+    tep: "server/services/tai-khoan.ts",
+    tim: '  { key: "ask_human", enabled: true },',
+    thay: '  { key: "ask_human", enabled: false },',
+  },
+  {
+    ten: "bỏ ví dụ mờ ở ô nhập vai trò",
+    tep: "src/pages/AutoScripts.tsx",
+    tim: "'Ví dụ: Bạn là nhân viên bán hàng của shop bột sắn dây, xưng em và gọi khách là anh/chị.\\n' +",
+    thay: "'' +",
+  },
+  {
+    ten: "kịch trần Trang lại báo thành lỗi hệ thống",
+    tep: "server/http.ts",
+    tim: '    if (error.code === "PROFILE_LIMIT_EXCEEDED") {',
+    thay: "    if (false) {",
+  },
 ];
 
 function chayKiemTra(): boolean {

@@ -23,32 +23,26 @@ const DEFAULT_AI_CONFIGS: Array<{
   kind: string;
   prompt: string;
 }> = [
-  {
-    kind: "sales",
-    prompt:
-      "Bạn là nhân viên bán hàng của shop, trả lời khách bằng tiếng Việt, " +
-      "xưng em và gọi khách là anh/chị. Nhiệm vụ: tư vấn sản phẩm, thu thập đủ " +
-      "họ tên, số điện thoại, địa chỉ, sản phẩm và số lượng để lên đơn. " +
-      "Không bịa thông tin về giá hay tình trạng hàng khi chưa được cung cấp.",
-  },
-  {
-    kind: "content",
-    prompt:
-      "Bạn là người viết nội dung mạng xã hội cho shop bán hàng tại Việt Nam. " +
-      "Viết tự nhiên, có cảm xúc, tránh sáo rỗng và tránh lạm dụng biểu tượng cảm xúc.",
-  },
-  {
-    kind: "ads",
-    prompt:
-      "Bạn là chuyên gia quảng cáo Facebook và Instagram. Phân tích hiệu quả chiến dịch " +
-      "dựa trên số liệu thật, chỉ ra nguyên nhân và đề xuất hành động cụ thể.",
-  },
-  {
-    kind: "analytics",
-    prompt:
-      "Bạn là chuyên viên phân tích dữ liệu bán hàng. Đọc số liệu hằng ngày, " +
-      "so sánh với hôm trước, tìm nguyên nhân biến động và đề xuất hướng xử lý.",
-  },
+  /*
+   * Tài khoản mới sinh ra với BỘ NÃO TRỐNG.
+   *
+   * Trước đây mỗi tài khoản mới được nhét sẵn bốn lời dặn mẫu — "Bạn là nhân
+   * viên bán hàng của shop...". Nghe thì tiện, nhưng nó là lời dặn của MỘT cái
+   * shop tưởng tượng, không phải của shop này. Hậu quả đã thấy tận mắt: tài
+   * khoản gắn Trang bán kem dưỡng tay mà vai trò AI vẫn là "chuyên viên tư vấn
+   * tài chính" — chữ mặc định nằm đó nhiều tháng, không ai sửa vì nhìn qua
+   * tưởng đã cài rồi.
+   *
+   * Trống thì chủ shop buộc phải tự viết, và họ là người duy nhất biết shop
+   * mình bán gì. Giao diện có sẵn ví dụ viết mờ để hướng dẫn, nhưng ví dụ mờ
+   * KHÔNG phải nội dung — không lưu vào database, không gửi cho AI.
+   *
+   * Vẫn tạo đủ bốn dòng để giao diện có chỗ ghi vào, chỉ để rỗng phần chữ.
+   */
+  { kind: "sales", prompt: "" },
+  { kind: "content", prompt: "" },
+  { kind: "ads", prompt: "" },
+  { kind: "analytics", prompt: "" },
 ];
 
 /** Các quy tắc chuyển hội thoại cho người thật, bật sẵn theo thực tế bán hàng. */

@@ -41,6 +41,26 @@ export function errorHandler(
 
   if (error instanceof ZernioError) {
     /*
+     * Kịch trần số Trang là chuyện của CHỦ SHOP, không phải sự cố hệ thống.
+     *
+     * Nó về dưới dạng 403, mà 403 thì bị gộp chung thành 502 "lỗi hệ thống"
+     * theo lý do ngay bên dưới. Gộp cả cái này vào đó thì chủ shop thêm Trang
+     * không được mà chỉ thấy "Hệ thống: ..." — không biết vì sao, không biết
+     * phải làm gì.
+     *
+     * Mình KHÔNG tự đặt trần riêng. Nhà cung cấp cho tới đâu thì mình cho tới
+     * đó; họ báo hết thì mình báo hết, nói thẳng nguyên nhân.
+     */
+    if (error.code === "PROFILE_LIMIT_EXCEEDED") {
+      res.status(409).json({
+        error:
+          "Đã dùng hết số Trang cho phép. Muốn thêm Trang nữa thì cần nâng hạn mức. " +
+          "Các Trang đang có vẫn chạy bình thường.",
+      });
+      return;
+    }
+
+    /*
      * 4xx từ Zernio thường là lỗi cấu hình phía người dùng, chuyển nguyên văn.
      *
      * TRỪ 401 và 403: đó là Zernio từ chối KHOÁ API của hệ thống, không phải

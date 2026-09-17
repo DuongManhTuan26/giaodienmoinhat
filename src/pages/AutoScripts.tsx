@@ -595,8 +595,30 @@ export default function AutoScripts() {
           onChange={(e) => setSystemPrompt(e.target.value)}
           rows={6}
           className="w-full bg-surface-container-high border border-outline focus:border-primary rounded-xl px-4 py-3 text-on-surface text-sm outline-none transition-colors resize-y mb-6"
-          placeholder="Ví dụ: Bạn là nhân viên bán hàng của shop thời trang, xưng em và gọi khách là anh/chị…"
+          /*
+            * Ví dụ viết MỜ, không phải chữ thật.
+            *
+            * Tài khoản mới sinh ra với ô này trống. Ví dụ mờ chỉ để chỉ đường —
+            * không lưu vào database, không gửi cho AI. Trước đây mỗi tài khoản
+            * được nhét sẵn một lời dặn mẫu, và đã có tài khoản gắn Trang bán kem
+            * dưỡng tay mà vai trò AI vẫn là "chuyên viên tư vấn tài chính" suốt
+            * nhiều tháng, vì nhìn qua tưởng đã cài rồi.
+            */
+          placeholder={
+            'Ví dụ: Bạn là nhân viên bán hàng của shop bột sắn dây, xưng em và gọi khách là anh/chị.\n' +
+            'Nhiệm vụ: tư vấn sản phẩm, thu đủ họ tên, số điện thoại, địa chỉ, sản phẩm và số lượng để lên đơn.\n' +
+            'Không nói giá hay tình trạng hàng khi chưa có trong tài liệu.'
+          }
         />
+        {!systemPrompt.trim() && (
+          <p className="text-sm text-orange-400 -mt-4 mb-6 flex items-start gap-2">
+            <span className="material-symbols-outlined text-[18px] shrink-0">info</span>
+            <span>
+              Chưa viết hướng dẫn thì AI chỉ chào hỏi chung chung, không biết shop bạn bán gì.
+              Viết vào đây rồi nạp tài liệu sản phẩm thì AI mới tư vấn và chốt đơn được.
+            </span>
+          </p>
+        )}
         <label className="font-mono text-[11px] font-bold text-on-surface-variant tracking-wider uppercase mb-3 block">
           Giọng điệu
         </label>
