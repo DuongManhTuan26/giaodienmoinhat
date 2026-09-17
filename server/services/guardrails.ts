@@ -103,7 +103,7 @@ const DEFAULT_CONFIG: GuardrailConfig = {
   auto_pause_minutes: 60,
 };
 
-async function loadConfig(userId: number): Promise<GuardrailConfig> {
+export async function loadConfig(userId: number): Promise<GuardrailConfig> {
   const row = await queryOne<GuardrailConfig>(
     `SELECT disclosure_enabled, disclosure_text, max_sends_per_minute,
             max_ai_sends_per_hour, auto_pause_enabled, failure_rate_threshold,
@@ -163,6 +163,24 @@ export function clampConfig(
 }
 
 /** Hạn mức tin/phút được phép, ưu tiên số sống do Zernio báo về. */
+/**
+ * Số shop đang thật sự gửi tin trong 5 phút gần đây.
+ *
+ * Nhớ tạm 30 giây: hàm này chạy trước MỖI tin gửi ra, đếm lại mỗi lượt là thêm
+ * một truy vấn vào đúng đường nóng nhất của hệ thống.
+ */
+let nhoSoShop = { luc: 0, so: 1 };
+
+async function soShopDangGui(): Promise<number> {
+  if (Date.now() - nhoSoShop.luc < 30_000) return nhoSoShop.so;
+  const row = await queryOne<{ n: number }>(
+    `SELECT COUNT(DISTINCT user_id)::int AS n FROM send_attempts
+      WHERE created_at > now() - interval '5 minutes'`
+  ).catch(() => null);
+  nhoSoShop = { luc: Date.now(), so: Math.max(1, row?.n ?? 1) };
+  return nhoSoShop.so;
+}
+
 export async function effectiveRateLimit(userId: number): Promise<{
   perMinute: number;
   source: "live" | "policy";
@@ -171,8 +189,21 @@ export async function effectiveRateLimit(userId: number): Promise<{
 }> {
   const live = getRateLimitState();
   if (live.limit !== null) {
+    /*
+     * Hạn mức sống là của CẢ HỆ THỐNG, không phải của riêng một shop.
+     *
+     * Nền tảng trả hạn mức theo khoá API, mà mọi shop dùng chung một khoá. Trả
+     * nguyên con số đó cho từng shop nghĩa là mười shop cùng tưởng mình được
+     * gửi 600 tin mỗi phút, rồi cả mười cùng đâm vào trần thật và cùng nhận
+     * 429 — trong khi không shop nào làm gì sai.
+     *
+     * Nên chia đều cho số shop ĐANG thật sự gửi tin. Một mình dùng thì vẫn được
+     * trọn hạn mức; đông lên thì tự co lại.
+     */
+    const soShop = await soShopDangGui();
+    const chia = Math.max(1, Math.floor(live.limit / Math.max(1, soShop)));
     return {
-      perMinute: live.limit,
+      perMinute: chia,
       source: "live",
       remaining: live.remaining,
       resetAt: live.resetAt,
@@ -253,7 +284,7 @@ export async function checkOutbound(params: {
       reason: "window_expired_7d",
       message:
         "Đã quá 7 ngày kể từ tin nhắn cuối của khách. Nền tảng không cho phép " +
-        "gửi tin nữa, kể cả nhân viên. Hãy chờ khách nhắn lại.",
+        "gửi tin nữa, kể cả nhân viên. Vui lòng chờ khách nhắn lại.",
     };
   }
 
@@ -353,10 +384,52 @@ export async function checkOutbound(params: {
   }
 
   // ── HÀNG RÀO 3: dòng khai báo bot ở tin đầu tiên của AI ───────────────
+  /*
+   * Khai báo ĐÚNG MỘT LẦN cho mỗi khách, kể cả khi lời khai báo đã nằm trong
+   * câu chào mẫu của kịch bản bình luận.
+   *
+   * Câu chào mẫu gửi thẳng qua zernio.privateReplyToComment nên không chạm vào
+   * cờ disclosure_sent_at, mà lúc đó hội thoại còn chưa tồn tại để mà đánh dấu.
+   * Nối hai bên qua chính con người: comments.author_id và
+   * customers.participant_id là cùng một id (đã kiểm chứng trên dữ liệu thật).
+   *
+   * Chỉ tính những câu chào mẫu ĐÃ CHẮC CHẮN có khai báo (cột dm_disclosed do
+   * sendPrivateReply ghi), nên không bao giờ có chuyện bỏ khai báo cả hai nơi.
+   * Giới hạn 7 ngày — đúng cửa sổ trả lời riêng của Meta; xa hơn thì coi như
+   * lần tiếp xúc mới, nói lại là đúng.
+   */
+  let daKhaiBaoQuaCauChao = false;
+  if (
+    params.actor === "ai" &&
+    config.disclosure_enabled &&
+    conversation.disclosure_sent_at === null
+  ) {
+    const cauChao = await queryOne(
+      `SELECT 1
+         FROM conversations c
+         JOIN customers k ON k.id = c.customer_id
+         JOIN comments cm ON cm.user_id = c.user_id AND cm.author_id = k.participant_id
+        WHERE c.id = $1
+          AND cm.dm_disclosed = TRUE
+          AND cm.private_replied_at > now() - interval '7 days'
+        LIMIT 1`,
+      [params.conversationId]
+    );
+    if (cauChao) {
+      daKhaiBaoQuaCauChao = true;
+      // Đánh dấu luôn để lần sau không phải tra lại.
+      await query(
+        "UPDATE conversations SET disclosure_sent_at = now() WHERE id = $1 AND disclosure_sent_at IS NULL",
+        [params.conversationId]
+      );
+    }
+  }
+
   const needsDisclosure =
     params.actor === "ai" &&
     config.disclosure_enabled &&
-    conversation.disclosure_sent_at === null;
+    conversation.disclosure_sent_at === null &&
+    !daKhaiBaoQuaCauChao;
 
   return {
     allowed: true,
@@ -370,6 +443,60 @@ export async function checkOutbound(params: {
 }
 
 /** Ghi nhận một lần gửi, dùng cho giới hạn tốc độ và đo tỷ lệ lỗi. */
+/**
+ * Xin một suất gửi cho việc trả lời bình luận.
+ *
+ * Vì sao cần: đường bình luận đi THẲNG tới Zernio, không qua sendMessageSafely,
+ * nên nó không hề bị bộ đếm nào ràng buộc. Đã đo: hàng đợi lấy 50 tin riêng +
+ * 50 trả lời công khai mỗi lượt quét, worker quét 5 giây một lần — tối đa 1200
+ * lượt gửi mỗi phút, trong khi bậc thấp nhất của Zernio là 60. Vượt 20 lần.
+ *
+ * Một bài viral là đủ để ăn 429 hàng loạt. Dự án này đã dính một lần rồi: retry
+ * dồn dập khiến Cloudflare trả error code 1015 và chặn cả tunnel.
+ *
+ * Dùng CHUNG bảng send_attempts với đường tin nhắn, không đếm riêng: hai bộ đếm
+ * mỗi cái 60 thì tổng thành 120, vẫn vượt.
+ */
+export async function xinPhepGuiBinhLuan(
+  userId: number,
+  socialAccountId: string | null
+): Promise<{ duoc: boolean; lyDo: string }> {
+  const config = await loadConfig(userId);
+  const policy = await effectiveRateLimit(userId);
+  const tran = Math.min(config.max_sends_per_minute, policy.perMinute);
+
+  // Zernio báo chính xác còn lại bao nhiêu thì tin con số đó trước.
+  if (policy.source === "live" && policy.remaining !== null && policy.remaining <= 0) {
+    return { duoc: false, lyDo: `Hết hạn mức Zernio, chờ nạp lại` };
+  }
+
+  const ganDay = await queryOne<{ n: number }>(
+    `SELECT COUNT(*)::int AS n FROM send_attempts
+      WHERE user_id = $1 AND decision = 'allowed'
+        AND created_at > now() - interval '1 minute'`,
+    [userId]
+  );
+
+  if ((ganDay?.n ?? 0) >= tran) {
+    return {
+      duoc: false,
+      lyDo: `Đã gửi ${ganDay?.n} lượt trong một phút, đạt trần ${tran}/phút`,
+    };
+  }
+
+  // Ghi chỗ NGAY khi cho phép, không đợi gửi xong: đợi thì lượt quét kế tiếp
+  // vẫn thấy bộ đếm cũ và cho qua thêm một loạt nữa.
+  await recordAttempt({
+    userId,
+    socialAccountId,
+    conversationId: null,
+    actor: "ai",
+    decision: "allowed",
+  });
+
+  return { duoc: true, lyDo: "" };
+}
+
 export async function recordAttempt(params: {
   userId: number;
   socialAccountId: string | null;
@@ -439,8 +566,19 @@ export async function evaluateAutoPause(params: {
   const config = await loadConfig(params.userId);
   if (!config.auto_pause_enabled) return { paused: false };
 
+  /*
+   * CHỈ đếm những lượt đã biết kết quả.
+   *
+   * Lượt còn 'pending' là lượt tiến trình chết giữa chừng, không biết tin có
+   * tới khách hay không. Đếm nó vào mẫu số mà không vào tử số là làm LOÃNG tỷ
+   * lệ lỗi — đúng lúc hệ thống đang sập thì lưới an toàn lại càng khó nổ.
+   *
+   * Đã đo trên dữ liệu thật: 17/34 = 50% theo cách cũ, trong khi chỉ tính lượt
+   * đã có kết quả là 17/26 = 65%. Tệ hơn nữa: 5 thất bại + 15 treo ra 25% nên
+   * KHÔNG ngắt, trong khi thực chất 5/5 tin đã gửi đều hỏng.
+   */
   const stats = await queryOne<{ total: number; failed: number }>(
-    `SELECT COUNT(*)::int AS total,
+    `SELECT COUNT(*) FILTER (WHERE outcome <> 'pending')::int AS total,
             COUNT(*) FILTER (WHERE outcome = 'failed')::int AS failed
        FROM send_attempts
       WHERE social_account_id = $1 AND decision = 'allowed'
@@ -523,6 +661,7 @@ export async function guardrailStatus(userId: number): Promise<Record<string, un
     ai_last_hour: number;
     failed_last_hour: number;
     total_last_hour: number;
+    decided_last_hour: number;
     blocked_last_day: number;
   }>(
     `SELECT
@@ -534,6 +673,9 @@ export async function guardrailStatus(userId: number): Promise<Record<string, un
                           AND created_at > now() - interval '1 hour')::int   AS failed_last_hour,
        COUNT(*) FILTER (WHERE decision = 'allowed'
                           AND created_at > now() - interval '1 hour')::int   AS total_last_hour,
+       /* Chỉ những lượt đã biết kết quả — xem chú thích ở evaluateAutoPause. */
+       COUNT(*) FILTER (WHERE decision = 'allowed' AND outcome <> 'pending'
+                          AND created_at > now() - interval '1 hour')::int   AS decided_last_hour,
        COUNT(*) FILTER (WHERE decision = 'blocked'
                           AND created_at > now() - interval '1 day')::int    AS blocked_last_day
      FROM send_attempts WHERE user_id = $1`,
@@ -576,8 +718,11 @@ export async function guardrailStatus(userId: number): Promise<Record<string, un
     usage: {
       sentLastMinute: usage?.last_minute ?? 0,
       aiSentLastHour: usage?.ai_last_hour ?? 0,
-      failureRateLastHour:
-        totalHour > 0 ? Math.round(((usage?.failed_last_hour ?? 0) / totalHour) * 100) : 0,
+      failureRateLastHour: (() => {
+        // Mẫu số là số lượt ĐÃ BIẾT kết quả, không phải tổng số lượt đã cho gửi.
+        const daBiet = usage?.decided_last_hour ?? 0;
+        return daBiet > 0 ? Math.round(((usage?.failed_last_hour ?? 0) / daBiet) * 100) : 0;
+      })(),
       totalLastHour: totalHour,
       blockedLastDay: usage?.blocked_last_day ?? 0,
     },

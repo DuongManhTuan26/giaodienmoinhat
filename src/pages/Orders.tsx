@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { clsx } from 'clsx';
 import { useNavigate } from 'react-router-dom';
 import { api, ApiError, formatCurrency, type Order } from '../lib/api';
+import BangLoi from '../components/BangLoi';
 
 const FILTERS = ['Tất cả', 'Chờ xác nhận', 'Đã xác nhận', 'Đang giao', 'Hoàn thành', 'Đã hủy'];
 
@@ -200,6 +201,9 @@ export default function Orders() {
 
   return (
     <main className="flex-1  p-6 md:p-8 max-w-7xl mx-auto w-full relative    bg-background">
+
+      <BangLoi noiDung={errorMessage} onDong={() => setErrorMessage('')} className="mb-6" />
+
       {/* Dropdown Overlay */}
       {openDropdownId && (
         <div 

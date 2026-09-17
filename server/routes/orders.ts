@@ -1,8 +1,8 @@
 import { Router } from "express";
-import { query, queryOne, transaction } from "../db.js";
+import { query, queryOne } from "../db.js";
 import { requireAuth } from "../auth.js";
 import { AppError, requireString, route } from "../http.js";
-import { sendOrderReport } from "../services/telegram.js";
+import { taoDon } from "../services/orders.js";
 
 export const ordersRouter = Router();
 
@@ -11,22 +11,6 @@ ordersRouter.use(requireAuth);
 const STATUSES = new Set(["pending", "confirmed", "shipping", "completed", "cancelled"]);
 
 /** Sinh mã đơn dạng DH260817-0001, dễ đọc khi trao đổi với khách. */
-async function nextOrderCode(userId: number): Promise<string> {
-  const today = new Date();
-  const prefix =
-    "DH" +
-    String(today.getFullYear()).slice(2) +
-    String(today.getMonth() + 1).padStart(2, "0") +
-    String(today.getDate()).padStart(2, "0");
-
-  const row = await queryOne<{ n: number }>(
-    `SELECT COUNT(*)::int AS n FROM orders
-      WHERE user_id = $1 AND code LIKE $2 || '%'`,
-    [userId, prefix]
-  );
-
-  return `${prefix}-${String((row?.n ?? 0) + 1).padStart(4, "0")}`;
-}
 
 ordersRouter.get(
   "/",
@@ -76,102 +60,23 @@ ordersRouter.post(
   "/",
   route(async (req, res) => {
     const body = req.body ?? {};
-    const product = requireString(body, "product", "tên sản phẩm");
-
-    const quantity = Number(body.quantity ?? 1);
-    const unitPrice = Number(body.unitPrice ?? 0);
-
-    if (!Number.isFinite(quantity) || quantity < 1) {
-      throw new AppError("Số lượng phải là số nguyên từ 1 trở lên");
-    }
-    if (!Number.isFinite(unitPrice) || unitPrice < 0) {
-      throw new AppError("Đơn giá không hợp lệ");
-    }
-
-    const userId = req.user!.id;
-    const conversationId =
-      typeof body.conversationId === "string" ? body.conversationId : null;
-
-    // Hội thoại phải thuộc về chính người dùng này, tránh gắn đơn nhầm shop.
-    let customerId: number | null = null;
-    if (conversationId) {
-      const conversation = await queryOne<{ customer_id: number | null }>(
-        "SELECT customer_id FROM conversations WHERE id = $1 AND user_id = $2",
-        [conversationId, userId]
-      );
-      if (!conversation) throw new AppError("Không tìm thấy hội thoại", 404);
-      customerId = conversation.customer_id;
-    }
-
-    const total = quantity * unitPrice;
-    const code = await nextOrderCode(userId);
-
-    const order = await transaction(async (client) => {
-      const inserted = await client.query(
-        `INSERT INTO orders
-           (user_id, customer_id, conversation_id, code, customer_name, phone,
-            address, product, quantity, unit_price, total, status, closed_by, note)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-         RETURNING *`,
-        [
-          userId,
-          customerId,
-          conversationId,
-          code,
-          typeof body.customerName === "string" ? body.customerName : null,
-          typeof body.phone === "string" ? body.phone : null,
-          typeof body.address === "string" ? body.address : null,
-          product,
-          quantity,
-          unitPrice,
-          total,
-          STATUSES.has(body.status) ? body.status : "pending",
-          body.closedBy === "ai" ? "ai" : "human",
-          typeof body.note === "string" ? body.note : null,
-        ]
-      );
-
-      // Ghi ngược thông tin đã xác nhận về hồ sơ khách, để lần sau AI biết sẵn.
-      if (customerId) {
-        await client.query(
-          `UPDATE customers
-              SET phone        = COALESCE($2, phone),
-                  address      = COALESCE($3, address),
-                  name         = COALESCE(NULLIF($4, ''), name),
-                  total_orders = total_orders + 1,
-                  total_spent  = total_spent + $5,
-                  updated_at   = now()
-            WHERE id = $1`,
-          [
-            customerId,
-            typeof body.phone === "string" ? body.phone : null,
-            typeof body.address === "string" ? body.address : null,
-            typeof body.customerName === "string" ? body.customerName : null,
-            total,
-          ]
-        );
-      }
-
-      if (conversationId) {
-        await client.query(
-          "UPDATE conversations SET status = 'done', updated_at = now() WHERE id = $1",
-          [conversationId]
-        );
-      }
-
-      return inserted.rows[0];
+    // Toàn bộ xử lý nằm ở services/orders.ts để AI bán hàng tự chủ dùng chung
+    // đúng một đường mã — xem phần đầu tệp đó để biết vì sao.
+    const order = await taoDon({
+      userId: req.user!.id,
+      conversationId: typeof body.conversationId === "string" ? body.conversationId : null,
+      customerName: typeof body.customerName === "string" ? body.customerName : null,
+      phone: typeof body.phone === "string" ? body.phone : null,
+      address: typeof body.address === "string" ? body.address : null,
+      product: requireString(body, "product", "tên sản phẩm"),
+      quantity: Number(body.quantity ?? 1),
+      unitPrice: Number(body.unitPrice ?? 0),
+      note: typeof body.note === "string" ? body.note : null,
+      closedBy: body.closedBy === "ai" ? "ai" : "human",
+      status: typeof body.status === "string" ? body.status : undefined,
     });
 
     res.status(201).json({ success: true, data: order });
-
-    // Báo Telegram sau khi đã trả lời. Telegram lỗi thì đơn vẫn được lưu —
-    // không để kênh thông báo làm hỏng việc chốt đơn.
-    sendOrderReport(userId, order).catch((error) =>
-      console.error(
-        "[đơn hàng] Không gửi được báo cáo Telegram:",
-        error instanceof Error ? error.message : error
-      )
-    );
   })
 );
 
@@ -222,6 +127,25 @@ ordersRouter.patch(
 
     if (fields.length === 0) throw new AppError("Không có thông tin nào để cập nhật");
 
+    /*
+     * Huỷ đơn phải trừ lại tổng chi của khách.
+     *
+     * Đã dựng lại: lên đơn 360.000 thì khách thành "1 đơn · 360.000"; huỷ đơn
+     * xong vẫn y nguyên "1 đơn · 360.000". Bộ đếm chỉ có đường cộng, không có
+     * đường trừ — đơn huỷ bao nhiêu lần thì khách vẫn mang tiếng đã mua.
+     *
+     * Bỏ huỷ thì cộng lại, để hai chiều luôn khớp nhau.
+     */
+    const truoc = await queryOne<{
+      status: string;
+      total: string;
+      customer_id: number | null;
+    }>(
+      "SELECT status, total, customer_id FROM orders WHERE id = $1 AND user_id = $2",
+      [req.params.id, req.user!.id]
+    );
+    if (!truoc) throw new AppError("Không tìm thấy đơn hàng", 404);
+
     const updated = await queryOne(
       `UPDATE orders SET ${fields.join(", ")}, updated_at = now()
         WHERE id = $1 AND user_id = $2 RETURNING *`,
@@ -229,6 +153,24 @@ ordersRouter.patch(
     );
 
     if (!updated) throw new AppError("Không tìm thấy đơn hàng", 404);
+
+    const sau = (updated as { status?: string }).status;
+    if (truoc.customer_id && sau && sau !== truoc.status) {
+      const huyCu = truoc.status === "cancelled";
+      const huyMoi = sau === "cancelled";
+      if (huyCu !== huyMoi) {
+        const dau = huyMoi ? -1 : 1;
+        await query(
+          `UPDATE customers
+              SET total_orders = GREATEST(0, total_orders + $2),
+                  total_spent  = GREATEST(0, total_spent + $3),
+                  updated_at   = now()
+            WHERE id = $1`,
+          [truoc.customer_id, dau, dau * Number(truoc.total)]
+        );
+      }
+    }
+
     res.json({ success: true, data: updated });
   })
 );

@@ -249,7 +249,7 @@ inboxRouter.post(
 
     if (accounts.rows.length === 0) {
       throw new AppError(
-        "Chưa có tài khoản nào được kết nối. Hãy kết nối kênh trước.",
+        "Chưa có tài khoản nào được kết nối. Vui lòng kết nối kênh trước.",
         409
       );
     }

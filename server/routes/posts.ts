@@ -3,10 +3,37 @@ import { query, queryOne } from "../db.js";
 import { requireAuth } from "../auth.js";
 import { AppError, requireString, route } from "../http.js";
 import * as zernio from "../services/zernio.js";
+import { publishPost, toMediaItems } from "../services/publish.js";
+import { doiChieuMotBai, ghiKetQua } from "../services/post-status.js";
+import { anDiaChiKho, doiDiaChiMedia } from "../services/media-proxy.js";
 
 export const postsRouter = Router();
 
 postsRouter.use(requireAuth);
+
+/**
+ * Kho tạm của Zernio giữ tệp vừa tải lên 7 ngày; chỉ khi bài dùng nó được đăng
+ * thì tệp mới chuyển sang kho vĩnh viễn.
+ *
+ * Vì vậy bài hẹn lịch xa hơn 7 ngày sẽ lên sóng mà MẤT ảnh, trong khi mọi bước
+ * trước đó đều báo thành công. Chặn ngay lúc đặt lịch, kèm lời giải thích, thay
+ * vì để chủ shop phát hiện qua một bài trống ảnh trên Fanpage.
+ */
+const MEDIA_TEMP_WINDOW_MS = 7 * 24 * 60 * 60 * 1_000;
+
+function assertMediaSurvivesSchedule(
+  media: zernio.MediaItem[],
+  scheduledFor: Date | null
+): void {
+  if (media.length === 0 || !scheduledFor) return;
+  if (scheduledFor.getTime() - Date.now() <= MEDIA_TEMP_WINDOW_MS) return;
+
+  throw new AppError(
+    "Bài có ảnh chỉ hẹn được trong vòng 7 ngày, vì Zernio chỉ giữ tệp mới tải " +
+      "lên trong 7 ngày rồi mới chuyển sang lưu vĩnh viễn khi bài được đăng. " +
+      "Vui lòng chọn thời gian gần hơn, hoặc hẹn bài chữ trước rồi thêm ảnh sát ngày đăng."
+  );
+}
 
 const STATUSES = new Set([
   "draft",
@@ -16,6 +43,18 @@ const STATUSES = new Set([
   "published",
   "failed",
 ]);
+
+/*
+ * Che địa chỉ kho trước khi bài rời khỏi máy chủ.
+ *
+ * Trong database vẫn là địa chỉ gốc — chỉ bản gửi xuống trình duyệt mới đổi.
+ */
+function anMediaTrongBai<T>(bai: T): T {
+  if (!bai || typeof bai !== "object") return bai;
+  const r = bai as Record<string, unknown>;
+  if (!("media" in r)) return bai;
+  return { ...r, media: doiDiaChiMedia(r.media, anDiaChiKho) } as T;
+}
 
 postsRouter.get(
   "/",
@@ -45,7 +84,7 @@ postsRouter.get(
       [req.user!.id]
     );
 
-    res.json({ success: true, data: rows.rows, summary });
+    res.json({ success: true, data: rows.rows.map(anMediaTrongBai), summary });
   })
 );
 
@@ -75,6 +114,35 @@ postsRouter.post(
       throw new AppError("Bài hẹn giờ phải có thời gian đăng");
     }
 
+    const media = toMediaItems(body.media);
+    assertMediaSurvivesSchedule(media, scheduledFor);
+
+    /*
+     * CHẶN TẠO TRÙNG Ở TẦNG MÁY CHỦ.
+     *
+     * Không dựa vào việc giao diện có khoá nút hay không. Đã xảy ra thật: nút
+     * không khoá, chủ shop bấm liên tục vì tưởng kẹt, và 18 bài giống hệt nhau
+     * được tạo trong hai giây — 17 bài lỗi.
+     *
+     * Cùng nội dung, cùng gian hàng, trong vòng một phút thì gần như chắc chắn
+     * là bấm nhầm chứ không phải ý định đăng hai lần.
+     */
+    const vuaTao = await queryOne<{ id: number; status: string }>(
+      `SELECT id, status FROM posts
+        WHERE user_id = $1 AND content = $2
+          AND created_at > now() - interval '1 minute'
+        ORDER BY created_at DESC LIMIT 1`,
+      [req.user!.id, content]
+    );
+
+    if (vuaTao) {
+      throw new AppError(
+        "Bài này vừa được tạo xong cách đây chưa tới một phút. " +
+          "Vui lòng chờ kết quả thay vì bấm lại, để tránh đăng trùng lên Fanpage.",
+        409
+      );
+    }
+
     const inserted = await queryOne(
       `INSERT INTO posts
          (user_id, content, media, target_account_ids, status, scheduled_for,
@@ -84,7 +152,7 @@ postsRouter.post(
       [
         req.user!.id,
         content,
-        JSON.stringify(Array.isArray(body.media) ? body.media : []),
+        JSON.stringify(media),
         targetAccountIds,
         status,
         scheduledFor,
@@ -109,8 +177,22 @@ postsRouter.patch(
       fields.push(`${column} = $${params.length}`);
     };
 
+    // Đọc bài một lần ở đây. Lệnh sửa có thể chỉ gửi ảnh, chỉ gửi thời gian, hay
+    // chỉ đổi trạng thái — muốn kiểm tra được cửa sổ 7 ngày của kho tạm thì phải
+    // biết cả hai giá trị SAU khi sửa, kể cả giá trị không nằm trong lệnh này.
+    const current = await queryOne<{
+      media: unknown;
+      scheduled_for: Date | null;
+    }>(
+      "SELECT media, scheduled_for FROM posts WHERE id = $1 AND user_id = $2",
+      [req.params.id, req.user!.id]
+    );
+    if (!current) throw new AppError("Không tìm thấy bài viết", 404);
+
     if (typeof body.content === "string") assign("content", body.content);
     if (Array.isArray(body.targetAccountIds)) assign("target_account_ids", body.targetAccountIds);
+    // Chuẩn hoá ngay tại cửa vào để trong database chỉ có một dạng duy nhất.
+    if (Array.isArray(body.media)) assign("media", JSON.stringify(toMediaItems(body.media)));
     if (typeof body.status === "string") {
       if (!STATUSES.has(body.status)) throw new AppError(`Trạng thái không hợp lệ: ${body.status}`);
       assign("status", body.status);
@@ -132,15 +214,20 @@ postsRouter.patch(
     // Đưa bài sang trạng thái hẹn giờ thì buộc phải có thời gian hẹn,
     // nếu không bài sẽ nằm im mãi mà không ai biết vì sao.
     if (body.status === "scheduled" && body.scheduledFor === undefined) {
-      const current = await queryOne<{ scheduled_for: Date | null }>(
-        "SELECT scheduled_for FROM posts WHERE id = $1 AND user_id = $2",
-        [req.params.id, req.user!.id]
-      );
-      if (!current) throw new AppError("Không tìm thấy bài viết", 404);
       if (!current.scheduled_for || current.scheduled_for.getTime() <= Date.now()) {
-        throw new AppError("Hãy chọn thời gian đăng ở tương lai cho bài hẹn giờ");
+        throw new AppError("Vui lòng chọn thời gian đăng trong tương lai cho bài hẹn giờ");
       }
     }
+
+    // Kiểm tra trên giá trị sau khi sửa, không phải trên giá trị vừa gửi lên.
+    assertMediaSurvivesSchedule(
+      Array.isArray(body.media) ? toMediaItems(body.media) : toMediaItems(current.media),
+      body.scheduledFor !== undefined
+        ? body.scheduledFor
+          ? new Date(body.scheduledFor)
+          : null
+        : current.scheduled_for
+    );
 
     if (fields.length === 0) throw new AppError("Không có thông tin nào để cập nhật");
 
@@ -151,7 +238,7 @@ postsRouter.patch(
     );
 
     if (!updated) throw new AppError("Không tìm thấy bài viết", 404);
-    res.json({ success: true, data: updated });
+    res.json({ success: true, data: anMediaTrongBai(updated) });
   })
 );
 
@@ -161,100 +248,148 @@ postsRouter.patch(
  * Đánh dấu đang đăng trước khi gọi, để hai lần bấm liên tiếp không tạo
  * hai bài trùng nhau trên Fanpage.
  */
+/**
+ * Sửa nội dung bài ĐÃ ĐĂNG, ngay trên nền tảng.
+ *
+ * Chỉ sửa được phần chữ. Nền tảng không cho đổi ảnh của bài đã lên sóng —
+ * muốn đổi ảnh thì gỡ bài rồi đăng lại.
+ */
+postsRouter.put(
+  "/:id/platform-content",
+  route(async (req, res) => {
+    const content = requireString(req.body, "content", "nội dung bài viết");
+
+    const post = await queryOne<{ id: number; status: string; platform_post_ref: string | null }>(
+      "SELECT id, status, platform_post_ref FROM posts WHERE id = $1 AND user_id = $2",
+      [req.params.id, req.user!.id]
+    );
+    if (!post) throw new AppError("Không tìm thấy bài viết này", 404);
+    if (post.status !== "published" || !post.platform_post_ref) {
+      throw new AppError(
+        "Bài này chưa lên nền tảng nên sửa trực tiếp trong ứng dụng, không cần cập nhật ra ngoài.",
+        400
+      );
+    }
+
+    await zernio.updatePost({ postId: post.platform_post_ref, content });
+
+    const updated = await queryOne(
+      "UPDATE posts SET content = $2, updated_at = now() WHERE id = $1 RETURNING *",
+      [post.id, content]
+    );
+    res.json({ success: true, data: anMediaTrongBai(updated) });
+  })
+);
+
+/**
+ * Gỡ bài khỏi nền tảng.
+ *
+ * Đây là cách duy nhất để thay ảnh của một bài đã đăng: gỡ đi rồi đăng lại.
+ * Gỡ rồi không lấy lại được, kèm theo mất hết lượt thích và bình luận đã có.
+ */
+postsRouter.post(
+  "/:id/unpublish",
+  route(async (req, res) => {
+    const post = await queryOne<{ id: number; status: string; platform_post_ref: string | null }>(
+      "SELECT id, status, platform_post_ref FROM posts WHERE id = $1 AND user_id = $2",
+      [req.params.id, req.user!.id]
+    );
+    if (!post) throw new AppError("Không tìm thấy bài viết này", 404);
+    if (!post.platform_post_ref) {
+      throw new AppError("Bài này chưa lên nền tảng nên không có gì để gỡ.", 400);
+    }
+
+    await zernio.deletePost(post.platform_post_ref);
+
+    const updated = await queryOne(
+      `UPDATE posts
+          SET status = 'draft', platform_post_ref = NULL, platform_urls = '{}'::jsonb,
+              published_at = NULL, stats = NULL, updated_at = now()
+        WHERE id = $1 RETURNING *`,
+      [post.id]
+    );
+    res.json({ success: true, data: anMediaTrongBai(updated) });
+  })
+);
+
 postsRouter.post(
   "/:id/publish",
+  route(async (req, res) => {
+    // Toàn bộ xử lý nằm ở services/publish.ts để bộ tự động dùng chung đúng
+    // một đường mã — xem phần đầu tệp đó để biết vì sao.
+    const updated = await publishPost(req.user!.id, req.params.id);
+    res.json({ success: true, data: anMediaTrongBai(updated) });
+  })
+);
+
+/**
+ * Xin địa chỉ để trình duyệt tải ảnh/video lên kho của Zernio.
+ *
+ * Trả về uploadUrl (trình duyệt PUT tệp lên đó) và publicUrl (địa chỉ để lưu
+ * vào bài). Khoá API không bao giờ ra khỏi server.
+ */
+postsRouter.post(
+  "/media/presign",
+  route(async (req, res) => {
+    const body = req.body ?? {};
+    const filename = requireString(body, "filename", "tên tệp");
+    const contentType = requireString(body, "contentType", "loại tệp");
+    const size = typeof body.size === "number" ? body.size : undefined;
+
+    const presigned = await zernio.presignMedia({ filename, contentType, size });
+
+    res.json({
+      success: true,
+      data: {
+        uploadUrl: presigned.uploadUrl,
+        publicUrl: anDiaChiKho(presigned.publicUrl),
+        type: presigned.type,
+        expiresIn: presigned.expiresIn,
+      },
+    });
+  })
+);
+
+/**
+ * Kiểm tra lại kết quả thật của một bài đang treo.
+ *
+ * Dùng cho bài ở trạng thái "chưa rõ kết quả": phía mình hết giờ chờ trong khi
+ * Zernio có thể đã đăng xong. TUYỆT ĐỐI chỉ ĐỌC, không đăng lại bất cứ thứ gì —
+ * đăng lại là cách chắc chắn nhất để Fanpage có hai bài giống hệt nhau.
+ *
+ * Hai đường tra:
+ *   1. Đã có id bên Zernio thì hỏi thẳng bài đó.
+ *   2. Chưa có id (hết giờ chờ ngay từ lúc gửi) thì dò trong các bài gần đây của
+ *      Zernio, đối chiếu bằng nội dung.
+ * Không thấy ở cả hai đường thì bài thật sự chưa lên — lúc đó mới cho đăng lại.
+ */
+postsRouter.post(
+  "/:id/recheck",
   route(async (req, res) => {
     const post = await queryOne<{
       id: number;
       content: string;
-      status: string;
-      target_account_ids: string[];
-      media: unknown[];
+      platform_post_ref: string | null;
     }>(
-      `SELECT id, content, status, target_account_ids, media
-         FROM posts WHERE id = $1 AND user_id = $2`,
+      "SELECT id, content, platform_post_ref FROM posts WHERE id = $1 AND user_id = $2",
       [req.params.id, req.user!.id]
     );
-
     if (!post) throw new AppError("Không tìm thấy bài viết", 404);
-    if (post.status === "published") throw new AppError("Bài này đã được đăng rồi", 409);
-    if (post.status === "publishing") {
-      throw new AppError("Bài đang được đăng, vui lòng đợi", 409);
-    }
 
-    // Zernio cần cả platform và accountId cho từng kênh, nên phải tra lại
-    // từ database chứ không thể gửi danh sách id phẳng.
-    const targets = await query<{ id: string; platform: string }>(
-      post.target_account_ids?.length
-        ? `SELECT id, platform FROM social_accounts
-             WHERE user_id = $1 AND connected = TRUE AND id = ANY($2::text[])
-               AND platform <> 'metaads'`
-        : `SELECT id, platform FROM social_accounts
-             WHERE user_id = $1 AND connected = TRUE AND platform <> 'metaads'`,
-      post.target_account_ids?.length
-        ? [req.user!.id, post.target_account_ids]
-        : [req.user!.id]
-    );
+    // Dùng chung services/post-status.ts với lưới an toàn tự động, để nút bấm
+    // tay và lưới chạy nền không bao giờ cho ra hai kết quả khác nhau.
+    const kq = await doiChieuMotBai(post);
+    const updated = await ghiKetQua(post.id, kq);
 
-    if (targets.rows.length === 0) {
-      throw new AppError(
-        "Chưa có kênh nào được kết nối để đăng bài. Vào mục Kết Nối Đa Nền Tảng để thêm kênh.",
-        409
-      );
-    }
-
-    await query("UPDATE posts SET status = 'publishing', updated_at = now() WHERE id = $1", [
-      post.id,
-    ]);
-
-    try {
-      const created = await zernio.createPost({
-        targets: targets.rows.map((row) => ({
-          platform: row.platform,
-          accountId: row.id,
-        })),
-        content: post.content,
-        mediaUrls: Array.isArray(post.media)
-          ? post.media.filter((item): item is string => typeof item === "string")
-          : [],
-        // Khoá chống đăng trùng gắn với chính bài này: hai lần bấm liên tiếp
-        // sẽ nhận lại bài cũ thay vì tạo hai bài trên Fanpage.
-        idempotencyKey: `post-${post.id}`,
+    if (kq.status === "failed") {
+      res.json({
+        success: true,
+        data: { found: false, message: "Bài chưa lên nền tảng. Bạn có thể đăng lại." },
       });
-
-      const inner = (created.post ?? created.existingPost ?? created) as Record<string, unknown>;
-      const zernioPostId =
-        (typeof inner._id === "string" ? inner._id : null) ??
-        (typeof inner.id === "string" ? inner.id : null);
-
-      /*
-       * KHÔNG đánh dấu đã đăng ở đây.
-       *
-       * Phản hồi HTTP 200 của Zernio chỉ nghĩa là ĐÃ NHẬN yêu cầu. Bài còn phải
-       * qua hàng đợi của họ rồi mới lên nền tảng, và có thể thất bại vì token
-       * hết hạn hay nền tảng từ chối nội dung. Trạng thái thật đến sau qua
-       * webhook post.published / post.partial / post.failed.
-       *
-       * Đánh dấu published ngay tại đây là lý do trước đó giao diện báo thành
-       * công trong khi Fanpage không có bài nào.
-       */
-      const updated = await queryOne(
-        `UPDATE posts
-            SET status = 'publishing', zernio_post_id = $2,
-                last_error = NULL, updated_at = now()
-          WHERE id = $1 RETURNING *`,
-        [post.id, zernioPostId]
-      );
-
-      res.json({ success: true, data: updated });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      await query(
-        `UPDATE posts SET status = 'failed', last_error = $2, updated_at = now() WHERE id = $1`,
-        [post.id, message.slice(0, 1_000)]
-      );
-      throw error;
+      return;
     }
+
+    res.json({ success: true, data: { found: true, post: anMediaTrongBai(updated) } });
   })
 );
 

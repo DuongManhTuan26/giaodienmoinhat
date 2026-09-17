@@ -6,6 +6,7 @@ import {
 } from '../lib/api';
 import { useActivePage } from '../lib/ActivePage';
 import { useNavigate } from 'react-router-dom';
+import BangLoi from '../components/BangLoi';
 
 /** Trạng thái hiển thị mà giao diện đang dùng cho chấm màu và nhãn. */
 type DisplayStatus = 'waiting' | 'ai' | 'expiring' | 'expired' | 'done';
@@ -131,6 +132,28 @@ export default function Inbox() {
     }
   };
 
+  /**
+   * Nhờ AI soạn sẵn câu trả lời cho nhân viên.
+   *
+   * Backend đã có sẵn từ lâu nhưng KHÔNG nút nào gọi. Đây đúng là lúc cần nhất:
+   * hội thoại AI đã nhường quyền, nhân viên vào tiếp mà chưa biết viết gì.
+   * Chỉ điền vào ô soạn — người vẫn đọc và sửa trước khi gửi, không tự gửi.
+   */
+  const handleSuggest = async () => {
+    if (!detail) return;
+    setIsSuggesting(true);
+    setErrorMessage('');
+    try {
+      const { data } = await api.ai.suggest(detail.id);
+      if (data.reply?.trim()) setDraft(data.reply.trim());
+      else setErrorMessage('AI chưa nghĩ ra câu trả lời cho hội thoại này.');
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'AI chưa gợi ý được');
+    } finally {
+      setIsSuggesting(false);
+    }
+  };
+
   const handleSend = async () => {
     if (!detail || !draft.trim() || sending) return;
     setSending(true);
@@ -225,6 +248,7 @@ export default function Inbox() {
   };
 
   const [isExtracting, setIsExtracting] = useState(false);
+  const [isSuggesting, setIsSuggesting] = useState(false);
   const [extractedInfoMap, setExtractedInfoMap] = useState<Record<string, any>>({});
 
   /** Nhờ AI đọc lại hội thoại và bóc tách năm thông tin lên đơn. */
@@ -320,6 +344,17 @@ export default function Inbox() {
     ? infoKeys.filter((k) => activeInfo[k as keyof typeof activeInfo] && activeInfo[k as keyof typeof activeInfo] !== 'Chưa có').length
     : 0;
 
+  /** Số đầu tiên tìm thấy trong chuỗi, null nếu không có số nào. */
+  const laySoDauTien = (v: unknown): number | null => {
+    const khop = String(v ?? '').match(/\d+([.,]\d+)?/);
+    if (!khop) return null;
+    const n = Number(khop[0].replace(',', '.'));
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+
+  /** Đơn có nhiều món thì AI trả về chuỗi liệt kê, không phải một con số. */
+  const nhieuMon = (v: unknown): boolean => (String(v ?? '').match(/\d+([.,]\d+)?/g) ?? []).length > 1;
+
   // --- Tạo đơn hàng từ hội thoại ---
   const [orderForm, setOrderForm] = useState({
     customerName: '', phone: '', address: '', product: '', quantity: 1, unitPrice: 0, note: '',
@@ -334,9 +369,20 @@ export default function Inbox() {
       phone: info?.phone !== 'Chưa có' ? (info?.phone ?? '') : '',
       address: info?.address !== 'Chưa có' ? (info?.address ?? '') : '',
       product: info?.product !== 'Chưa có' ? (info?.product ?? '') : '',
-      quantity: Number(info?.quantity) > 0 ? Number(info?.quantity) : 1,
+      /*
+       * Khách mua hai món thì AI trả về chuỗi kiểu "2 hộp kem dưỡng da tay,
+       * 1kg bột sắn dây". Number() của chuỗi đó là NaN, và bản cũ lặng lẽ điền
+       * số lượng 1 — đơn hai món thành đơn một món, không ai hay.
+       *
+       * Lấy con số ĐẦU TIÊN trong chuỗi thì ít nhất cũng đúng với đơn một món;
+       * đơn nhiều món thì nguyên văn được đẩy sang ô ghi chú bên dưới để nhân
+       * viên nhìn thấy và tự sửa.
+       */
+      quantity: laySoDauTien(info?.quantity) ?? 1,
       unitPrice: 0,
-      note: '',
+      note: nhieuMon(info?.quantity)
+        ? `Khách đặt nhiều món — nguyên văn AI ghi nhận: ${info?.product} · ${info?.quantity}`
+        : '',
     });
     setErrorMessage('');
     setIsOrderModalOpen(true);
@@ -345,7 +391,7 @@ export default function Inbox() {
   const handleCreateOrder = async () => {
     if (!detail) return;
     if (!orderForm.product.trim()) {
-      setErrorMessage('Hãy nhập tên sản phẩm.');
+      setErrorMessage('Vui lòng nhập tên sản phẩm.');
       return;
     }
     setCreatingOrder(true);
@@ -375,6 +421,15 @@ export default function Inbox() {
 
   return (
     <main className="flex flex-col w-full h-full bg-background overflow-hidden relative">
+
+      {/* Trang này chiếm trọn chiều cao và không cuộn ở gốc, nên băng lỗi phải
+          nổi lên trên cùng thì chủ shop mới thấy. */}
+      {errorMessage && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 w-[min(560px,90%)] shadow-lg">
+          <BangLoi noiDung={errorMessage} onDong={() => setErrorMessage('')} />
+        </div>
+      )}
+
       {/* Toast Notification */}
       {showCopyToast && (
         <div className="fixed top-20 right-8 z-[100] bg-surface-container-high border border-primary/30 text-primary px-6 py-3 rounded-lg shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-top-4 duration-300">
@@ -563,7 +618,40 @@ export default function Inbox() {
               {selectedConv.messages.map((msg: any) => {
                 const isShop = msg.sender === 'shop';
                 const isAI = isShop && msg.senderType === 'AI';
-                
+                const isHeThong = msg.senderType === 'Hệ thống';
+
+                /*
+                 * Ghi chú hệ thống KHÔNG được vẽ như tin đã gửi cho khách.
+                 *
+                 * Trước đây nó dùng đúng bong bóng xanh của tin nhân viên gửi
+                 * đi, nên chủ shop đọc "Cần chủ shop lưu ý: khách phàn nàn…"
+                 * và tưởng khách cũng nhận được câu đó. Ở chế độ tự chủ, AI
+                 * sinh ra loại ghi chú này thường xuyên nên hiểu nhầm là chắc
+                 * chắn xảy ra.
+                 *
+                 * Vẽ thành một dải giữa khung, màu khác hẳn, nói thẳng là chỉ
+                 * mình bạn thấy.
+                 */
+                if (isHeThong) {
+                  return (
+                    <div key={msg.id} className="flex justify-center my-1">
+                      <div className="flex items-start gap-2 max-w-[80%] bg-surface-container-low border border-outline-variant/50 rounded-xl px-3 py-2">
+                        <span className="material-symbols-outlined text-[16px] text-on-surface-variant shrink-0 mt-0.5">
+                          info
+                        </span>
+                        <div>
+                          <p className="text-xs text-on-surface-variant leading-relaxed whitespace-pre-wrap">
+                            {msg.text}
+                          </p>
+                          <p className="text-[10px] text-on-surface-variant/60 mt-0.5">
+                            Ghi chú hệ thống · chỉ mình bạn thấy, khách không nhận được
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
                 return (
                   <div key={msg.id} className={clsx("flex flex-col w-full max-w-[85%]", isShop ? "ml-auto items-end" : "mr-auto items-start")}>
                     <div className="flex items-baseline gap-2 mb-1">
@@ -600,7 +688,7 @@ export default function Inbox() {
               {selectedConv.status === 'ai' && (
                 <div className="mb-3 px-3 py-2 bg-primary/10 border border-primary/20 rounded-md flex items-center gap-2 text-xs text-primary">
                   <span className="material-symbols-outlined text-[16px]">smart_toy</span>
-                  <span className="font-medium">AI đang chat. Bạn gửi tin nhắn sẽ tự động lấy lại quyền điều khiển.</span>
+                  <span className="font-medium">AI đang trả lời khách. Khi bạn gửi tin nhắn, quyền trả lời sẽ chuyển lại cho bạn.</span>
                 </div>
               )}
               
@@ -612,6 +700,16 @@ export default function Inbox() {
                   className="p-2 text-on-surface-variant hover:text-primary transition-colors shrink-0 disabled:opacity-50"
                 >
                   <span className="material-symbols-outlined text-[20px]">{isExtracting ? 'sync' : 'add_circle'}</span>
+                </button>
+                <button
+                  onClick={handleSuggest}
+                  disabled={isSuggesting || !selectedConv.canSend}
+                  title="Nhờ AI soạn sẵn câu trả lời, bạn đọc lại rồi mới gửi"
+                  className="p-2 text-on-surface-variant hover:text-primary transition-colors shrink-0 disabled:opacity-50"
+                >
+                  <span className={clsx("material-symbols-outlined text-[20px]", isSuggesting && "animate-spin")}>
+                    {isSuggesting ? 'progress_activity' : 'auto_awesome'}
+                  </span>
                 </button>
                 <textarea 
                   value={draft}

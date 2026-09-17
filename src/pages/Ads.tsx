@@ -3,6 +3,7 @@ import { clsx } from 'clsx';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import AITrainingModal from '../components/AITrainingModal';
 import { api, ApiError, formatCurrency, type Post } from '../lib/api';
+import BangLoi from '../components/BangLoi';
 
 /** Trạng thái Meta -> nhãn tiếng Việt mà giao diện đang dùng. */
 function statusLabel(metaStatus: string): string {
@@ -121,7 +122,7 @@ export default function Ads() {
   /** Đẩy ngân sách cho bài đã chọn — gọi Meta thật qua Zernio. */
   const handleLaunchBoost = async () => {
     if (!selectedPostId) {
-      setErrorMessage('Hãy chọn một bài đã đăng để quảng cáo.');
+      setErrorMessage('Vui lòng chọn một bài đã đăng để quảng cáo.');
       return;
     }
     setBusy(true);
@@ -150,7 +151,7 @@ export default function Ads() {
 
   const handleCreateAudience = async () => {
     if (!audName.trim()) {
-      setErrorMessage('Hãy đặt tên cho tệp đối tượng.');
+      setErrorMessage('Vui lòng đặt tên cho tệp đối tượng.');
       return;
     }
     setBusy(true);
@@ -261,21 +262,74 @@ export default function Ads() {
   };
 
   /**
-   * Sửa ngân sách và cấu hình sâu vẫn phải làm trong Trình quản lý quảng cáo
-   * của Meta — mở thẳng sang đó thay vì dựng lại một biểu mẫu nửa vời.
+   * Sửa ngân sách ngay tại đây, đi qua Zernio.
+   *
+   * Bản trước mở thẳng Trình quản lý quảng cáo của Facebook. Sai: chủ shop phải
+   * học thêm một công cụ nữa, mà đó đúng là thứ mình trả tiền cho Zernio để
+   * khỏi phải đụng vào.
    */
-  const handleOpenOnMeta = (campaignId: string) => {
-    window.open(
-      `https://adsmanager.facebook.com/adsmanager/manage/campaigns?selected_campaign_ids=${encodeURIComponent(campaignId)}`,
-      '_blank', 'noopener,noreferrer'
+  const handleEditBudget = async (campaignId: string, currentDaily: number) => {
+    const input = prompt(
+      'Ngân sách mỗi ngày (đồng):',
+      currentDaily > 0 ? String(currentDaily) : ''
     );
+    if (input === null) return;
+
+    const amount = Number(input.replace(/[^\d]/g, ''));
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setErrorMessage('Ngân sách phải là một số lớn hơn 0.');
+      return;
+    }
+
+    setBusy(true);
+    setErrorMessage('');
+    try {
+      await api.ads.updateCampaignBudget(campaignId, { amount, budgetType: 'daily' });
+      await load();
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không sửa được ngân sách');
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const handleOpenAudienceOnMeta = (audienceId: string) => {
-    window.open(
-      `https://adsmanager.facebook.com/audiences?selected_audience_ids=${encodeURIComponent(audienceId)}`,
-      '_blank', 'noopener,noreferrer'
-    );
+  /*
+   * Sửa tệp đối tượng NGAY TRONG APP.
+   *
+   * Bản cũ chỉ có một nút mở sang Trình quản lý quảng cáo của Facebook, trong
+   * khi trang Kết nối hứa thẳng "không cần mở trình quản lý quảng cáo riêng".
+   * Zernio có sẵn PUT /v1/ads/audiences/{id} nên chẳng có lý do gì phải đẩy
+   * chủ shop ra ngoài.
+   *
+   * Giới hạn nói thật trong hộp thoại: tệp tải lên / theo website / tương đồng
+   * thì quy tắc là bất biến, chỉ đổi được tên và mô tả.
+   */
+  const [suaTepId, setSuaTepId] = useState<string | null>(null);
+  const [suaTepTen, setSuaTepTen] = useState('');
+  const [dangLuuTep, setDangLuuTep] = useState(false);
+
+  const moSuaTep = (id: string, ten: string) => {
+    setSuaTepId(id);
+    setSuaTepTen(ten);
+    setErrorMessage('');
+  };
+
+  const luuTepDoiTuong = async () => {
+    if (!suaTepId || dangLuuTep) return;
+    const ten = suaTepTen.trim();
+    if (!ten) { setErrorMessage('Tên tệp đối tượng không được để trống.'); return; }
+
+    setDangLuuTep(true);
+    setErrorMessage('');
+    try {
+      await api.ads.updateAudience(suaTepId, { name: ten });
+      setSuaTepId(null);
+      await load();
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không sửa được tệp đối tượng');
+    } finally {
+      setDangLuuTep(false);
+    }
   };
 
   const handleAnalyze = async () => {
@@ -335,6 +389,8 @@ export default function Ads() {
         : 'Chưa có ngày bắt đầu',
       type: String(c.objective ?? 'Chiến dịch'),
       budget: daily > 0 ? `${formatCurrency(daily)}/ngày` : 'Chưa đặt ngân sách',
+      // Số thô, để ô sửa ngân sách hiện sẵn giá trị đang chạy.
+      dailyRaw: daily,
       spent: {
         current: spent > 0 ? spent.toLocaleString('vi-VN') : '0',
         total: lifetime > 0 ? formatCurrency(lifetime) : formatCurrency(daily),
@@ -399,7 +455,9 @@ export default function Ads() {
 
   return (
     <main className="flex-1  p-6 md:p-8 max-w-7xl mx-auto w-full relative    bg-background">
-      
+
+      <BangLoi noiDung={errorMessage} onDong={() => setErrorMessage('')} className="mb-6" />
+
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-8">
         <div>
@@ -416,8 +474,8 @@ export default function Ads() {
             onClick={() => setIsTrainingOpen(true)}
             className="px-4 py-2 bg-surface-container text-primary border border-primary/30 font-bold rounded-lg hover:bg-primary/10 transition-colors flex items-center gap-2"
           >
-            <span className="material-symbols-outlined text-[18px]">model_training</span>
-            Huấn luyện AI
+            <span className="material-symbols-outlined text-[18px]">badge</span>
+            Vai trò AI
           </button>
           <select className="bg-surface-container border border-outline-variant rounded-lg px-4 py-2 text-sm text-on-surface font-medium focus:outline-none focus:border-primary">
             <option>30 ngày qua</option>
@@ -625,7 +683,7 @@ export default function Ads() {
                     </button>
                     <div className="absolute right-8 top-1/2 -translate-y-1/2 w-48 bg-surface-container-high border border-outline-variant rounded-xl shadow-xl py-1 opacity-0 invisible peer-hover:opacity-100 peer-hover:visible hover:opacity-100 hover:visible transition-all z-10">
                       <button onClick={() => handleViewCampaign(camp.id)} className="w-full text-left px-4 py-2 text-sm text-on-surface hover:bg-surface-variant transition-colors">Xem chi tiết</button>
-                      <button onClick={() => handleOpenOnMeta(camp.id)} className="w-full text-left px-4 py-2 text-sm text-on-surface hover:bg-surface-variant transition-colors">Sửa ngân sách</button>
+                      <button onClick={() => handleEditBudget(camp.id, camp.dailyRaw)} disabled={busy} className="w-full text-left px-4 py-2 text-sm text-on-surface hover:bg-surface-variant transition-colors disabled:opacity-50">Sửa ngân sách</button>
                       {camp.status === 'Đang chạy' ? (
                         <button onClick={() => handlePauseCampaign(camp.id)} disabled={busy} className="w-full text-left px-4 py-2 text-sm text-on-surface hover:bg-surface-variant transition-colors disabled:opacity-50">Tạm dừng</button>
                       ) : (
@@ -665,8 +723,8 @@ export default function Ads() {
                 <span className="px-2 py-0.5 bg-surface-variant text-on-surface-variant font-medium text-[11px] uppercase tracking-wider rounded">
                   {aud.type}
                 </span>
-                <button onClick={() => handleOpenAudienceOnMeta(aud.id)} title="Mở trong Trình quản lý quảng cáo" className="text-on-surface-variant opacity-0 group-hover:opacity-100 hover:text-on-surface transition-opacity">
-                  <span className="material-symbols-outlined text-[18px]">more_horiz</span>
+                <button onClick={() => moSuaTep(aud.id, String(aud.name ?? ''))} title="Đổi tên tệp đối tượng" className="text-on-surface-variant opacity-0 group-hover:opacity-100 hover:text-primary transition-all">
+                  <span className="material-symbols-outlined text-[18px]">edit</span>
                 </button>
               </div>
               <div>
@@ -729,7 +787,7 @@ export default function Ads() {
             {/* Content Area */}
             <div className="flex-1 overflow-y-auto custom-scrollbar p-8 relative">
               {isSuccess ? (
-                <div className="flex flex-col items-center justify-center h-full text-center w-full max-w-md mx-auto py-12 animate-in zoom-in-95 duration-500">
+                <div className="flex flex-col items-center justify-center h-full text-center w-full max-w-[480px] mx-auto py-12 animate-in zoom-in-95 duration-500">
                   <div className="w-24 h-24 rounded-full bg-green-500/10 border-2 border-green-500/30 flex items-center justify-center mb-6 shadow-[0_0_50px_rgba(34,197,94,0.2)]">
                     <span className="material-symbols-outlined text-[48px] text-green-400">check_circle</span>
                   </div>
@@ -1289,7 +1347,48 @@ export default function Ads() {
         </div>
       )}
 
-      <AITrainingModal isOpen={isTrainingOpen} onClose={() => setIsTrainingOpen(false)} aiName="AI Quảng Cáo" />
+      <AITrainingModal kind="ads" isOpen={isTrainingOpen} onClose={() => setIsTrainingOpen(false)} aiName="AI Quảng Cáo" />
+
+      {/* Sửa tệp đối tượng — thay cho nút mở sang Facebook trước đây */}
+      {suaTepId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" onClick={() => setSuaTepId(null)} />
+          <div className="relative w-full max-w-[460px] bg-surface-container-high border border-primary/30 rounded-2xl shadow-[0_0_40px_rgba(0,229,255,0.1)] p-6">
+            <h2 className="text-lg font-bold text-on-surface mb-1">Đổi tên tệp đối tượng</h2>
+            <p className="text-sm text-on-surface-variant mb-5 leading-relaxed">
+              Quy tắc nhắm chọn của tệp là bất biến — nền tảng không cho sửa sau khi tạo.
+              Muốn nhắm khác thì tạo tệp mới.
+            </p>
+
+            <label className="font-mono text-[11px] font-bold text-on-surface-variant tracking-wider uppercase mb-2 block">
+              Tên tệp
+            </label>
+            <input
+              value={suaTepTen}
+              onChange={(e) => setSuaTepTen(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') luuTepDoiTuong(); }}
+              className="w-full bg-surface-container border border-outline-variant focus:border-primary rounded-xl px-4 py-3 text-sm text-on-surface outline-none transition-colors mb-6"
+            />
+
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setSuaTepId(null)}
+                className="px-5 py-2.5 font-bold text-sm text-on-surface-variant hover:text-on-surface transition-colors"
+              >
+                Hủy
+              </button>
+              <button
+                onClick={luuTepDoiTuong}
+                disabled={dangLuuTep}
+                className="px-5 py-2.5 bg-primary text-on-primary font-bold text-sm rounded-xl shadow-[0_4px_15px_rgba(0,229,255,0.4)] hover:scale-105 transition-transform disabled:opacity-60 disabled:hover:scale-100"
+              >
+                {dangLuuTep ? 'Đang lưu…' : 'Lưu'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </main>
   );
 }

@@ -8,14 +8,26 @@ import { env } from "../env.js";
  * thật tới https://zernio.com/api/v1 ngày 17/08/2026, không suy đoán từ tài liệu.
  */
 
+import { giauNhaCungCap } from "./text.js";
+
 export class ZernioError extends Error {
+  /**
+   * Nguyên văn từ nhà cung cấp. CHỈ dùng cho log của máy chủ.
+   *
+   * `message` đã được che tên nhà cung cấp vì nó chảy đi rất nhiều hướng tới
+   * mắt chủ shop: phản hồi API, posts.last_error, cảnh báo Telegram. Che ngay
+   * tại chỗ sinh ra lỗi thì không phải nhớ vá từng hướng một.
+   */
+  readonly nguyenVan: string;
+
   constructor(
     message: string,
     readonly status: number,
     readonly code?: string,
     readonly body?: unknown
   ) {
-    super(message);
+    super(giauNhaCungCap(message));
+    this.nguyenVan = message;
     this.name = "ZernioError";
   }
 
@@ -33,10 +45,20 @@ interface RequestOptions {
   headers?: Record<string, string>;
   /** Số lần thử lại khi gặp lỗi tạm thời. */
   retries?: number;
+  /**
+   * Hạn chờ riêng, tính bằng mili giây.
+   *
+   * Mặc định 20 giây đủ cho hầu hết lời gọi, nhưng KHÔNG đủ cho việc tạo bài
+   * có ảnh: Zernio phải tải ảnh từ kho tạm về, xử lý rồi mới đẩy sang Facebook.
+   * Đã gặp thật: hết giờ chờ ở phía mình trong khi bài ĐÃ ĐĂNG THÀNH CÔNG.
+   */
+  timeoutMs?: number;
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = "GET", query, body, headers = {}, retries = 2 } = options;
+  const {
+    method = "GET", query, body, headers = {}, retries = 2, timeoutMs = 20_000,
+  } = options;
 
   const url = new URL(env.zernio.baseUrl + path);
   for (const [key, value] of Object.entries(query ?? {})) {
@@ -58,7 +80,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
           ...headers,
         },
         body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(20_000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       // Lỗi mạng hoặc quá hạn chờ — coi như tạm thời.
@@ -293,11 +315,26 @@ export async function listAccounts(profileId?: string): Promise<ZernioAccount[]>
 /** Lấy URL để người dùng bấm vào và cấp quyền cho một nền tảng. */
 export async function getConnectUrl(
   platform: string,
-  profileId: string
+  profileId: string,
+  options: { redirectUrl?: string; headless?: boolean } = {}
 ): Promise<string> {
   const data = await request<{ url?: string; authUrl?: string }>(
     `/connect/${encodeURIComponent(platform)}`,
-    { query: { profileId } }
+    {
+      query: {
+        profileId,
+        /*
+         * redirect_url: thiếu tham số này thì Zernio đưa khách về dashboard
+         * CỦA HỌ sau khi cấp quyền xong — khách nhìn thấy nhà cung cấp hạ tầng,
+         * và cửa sổ không bao giờ quay lại app nên màn hình kết nối treo mãi.
+         *
+         * headless: để Zernio KHÔNG dựng màn hình chọn Trang. Mình tự dựng, vừa
+         * đúng giao diện đã thiết kế, vừa giữ khách ở lại trong sản phẩm.
+         */
+        ...(options.redirectUrl ? { redirect_url: options.redirectUrl } : {}),
+        ...(options.headless ? { headless: "true" } : {}),
+      },
+    }
   );
   const url = data.url ?? data.authUrl;
   if (!url) {
@@ -308,6 +345,78 @@ export async function getConnectUrl(
     );
   }
   return url;
+}
+
+/** Một Trang Facebook mà khách có quyền quản lý. */
+export interface FacebookPage {
+  id: string;
+  name: string;
+  username?: string | null;
+  category?: string;
+  tasks?: string[];
+}
+
+/**
+ * Lấy danh sách Trang sau khi khách cấp quyền xong (chặng 2 của headless).
+ *
+ * connectToken đi vào header X-Connect-Token — tài liệu ghi rõ là bắt buộc khi
+ * gọi bằng API key, mà mình thì luôn gọi bằng API key.
+ */
+export async function listFacebookPages(params: {
+  profileId: string;
+  tempToken: string;
+  connectToken?: string | null;
+}): Promise<FacebookPage[]> {
+  const data = await request<{ pages?: FacebookPage[] }>(
+    "/connect/facebook/select-page",
+    {
+      query: { profileId: params.profileId, tempToken: params.tempToken },
+      ...(params.connectToken
+        ? { headers: { "X-Connect-Token": params.connectToken } }
+        : {}),
+    }
+  );
+  return data.pages ?? [];
+}
+
+/**
+ * Chốt Trang khách đã chọn — đây là bước thật sự tạo ra kênh trên Zernio.
+ *
+ * userProfile phải là OBJECT đã giải mã, không phải chuỗi mã hoá URL nhận được
+ * ở đường dẫn quay về; gửi nguyên chuỗi sẽ bị từ chối 400.
+ */
+export async function selectFacebookPage(params: {
+  profileId: string;
+  pageId: string;
+  tempToken: string;
+  userProfile: Record<string, unknown>;
+  connectToken?: string | null;
+}): Promise<{
+  message?: string;
+  account?: {
+    accountId?: string;
+    platform?: string;
+    username?: string;
+    displayName?: string;
+    profilePicture?: string;
+    isActive?: boolean;
+    selectedPageName?: string;
+  };
+}> {
+  return request("/connect/facebook/select-page", {
+    method: "POST",
+    body: {
+      profileId: params.profileId,
+      pageId: params.pageId,
+      tempToken: params.tempToken,
+      userProfile: params.userProfile,
+    },
+    ...(params.connectToken
+      ? { headers: { "X-Connect-Token": params.connectToken } }
+      : {}),
+    // Không thử lại: gọi hai lần có thể tạo hai kênh trùng cho cùng một Trang.
+    retries: 0,
+  });
 }
 
 export async function disconnectAccount(accountId: string): Promise<void> {
@@ -335,18 +444,37 @@ export async function listConversations(params: {
  */
 export async function getConversation(
   conversationId: string,
-  accountId: string
+  accountId: string,
+  limit = 50
 ): Promise<{ conversation?: ZernioConversation; messages: ZernioMessage[] }> {
-  const data = await request<{
-    conversation?: ZernioConversation;
+  /*
+   * HAI đường dẫn khác nhau, đừng gộp.
+   *
+   * GET /inbox/conversations/{id}            -> chỉ thông tin hội thoại
+   * GET /inbox/conversations/{id}/messages   -> danh sách tin nhắn
+   *
+   * Bản trước gọi đường thứ nhất rồi mò tin nhắn trong đó, nên LUÔN nhận về
+   * mảng rỗng — kiểm chứng bằng lời gọi thật: phản hồi chỉ có { data: {...} }
+   * chứa id, participantName, lastMessage… và không có tin nhắn nào.
+   */
+  const meta = await request<{ data?: ZernioConversation; conversation?: ZernioConversation }>(
+    `/inbox/conversations/${encodeURIComponent(conversationId)}`,
+    { query: { accountId } }
+  );
+
+  const tin = await request<{
     data?: ZernioMessage[];
     messages?: ZernioMessage[];
-  }>(`/inbox/conversations/${encodeURIComponent(conversationId)}`, {
-    query: { accountId },
+  }>(`/inbox/conversations/${encodeURIComponent(conversationId)}/messages`, {
+    // asc = cũ trước, đúng thứ tự đọc của một đoạn chat.
+    query: { accountId, limit, sortOrder: "asc" },
   });
+
+  const messages = tin.messages ?? tin.data ?? [];
+
   return {
-    conversation: data.conversation,
-    messages: data.messages ?? data.data ?? [],
+    conversation: meta.conversation ?? meta.data,
+    messages: Array.isArray(messages) ? messages : [],
   };
 }
 
@@ -497,10 +625,25 @@ export interface PostTarget {
  * `x-request-id` là khoá chống đăng trùng: gửi lại cùng một UUID trong khoảng
  * 5 phút thì Zernio trả về bài cũ thay vì đăng thêm một bài nữa lên Fanpage.
  */
+/** Loại tệp Zernio nhận trong mediaItems. */
+export type MediaType = "image" | "video" | "gif" | "document";
+
+export interface MediaItem {
+  url: string;
+  type: MediaType;
+}
+
 export async function createPost(params: {
   targets: PostTarget[];
   content: string;
-  mediaUrls?: string[];
+  /**
+   * Ảnh/video kèm bài.
+   *
+   * Zernio nhận `mediaItems: [{ url, type }]`. Tên `mediaUrls` là của Ayrshare
+   * — gửi tên đó thì Zernio bỏ qua im lặng và bài lên sóng KHÔNG có ảnh, trong
+   * khi API vẫn trả về thành công.
+   */
+  mediaItems?: MediaItem[];
   scheduledFor?: Date | null;
   /** Múi giờ dùng để hiểu thời gian hẹn. Mặc định giờ Việt Nam. */
   timezone?: string;
@@ -525,7 +668,7 @@ export async function createPost(params: {
         accountId: target.accountId,
       })),
       timezone: params.timezone ?? "Asia/Ho_Chi_Minh",
-      ...(params.mediaUrls?.length ? { mediaUrls: params.mediaUrls } : {}),
+      ...(params.mediaItems?.length ? { mediaItems: params.mediaItems } : {}),
       // Thiếu publishNow thì Zernio chỉ lưu bài ở trạng thái draft và không
       // bao giờ đẩy lên nền tảng — bài nằm im mà giao diện tưởng đã đăng.
       ...(params.scheduledFor
@@ -533,11 +676,142 @@ export async function createPost(params: {
         : { publishNow: true }),
     },
     retries: 0,
+    // Bài có ảnh cần Zernio tải ảnh về rồi mới đẩy sang nền tảng.
+    timeoutMs: 90_000,
   });
+}
+
+/**
+ * Các bài gần đây, dùng để đối chiếu khi mình mất dấu một bài đã gửi đi.
+ * Chỉ đọc — không bao giờ dùng để đăng lại.
+ */
+export async function listRecentPosts(limit = 20): Promise<Record<string, unknown>[]> {
+  const data = await request<{ posts?: unknown[]; data?: unknown[] }>("/posts", {
+    query: { limit },
+  });
+  const list = data.posts ?? data.data ?? [];
+  return Array.isArray(list) ? (list as Record<string, unknown>[]) : [];
+}
+
+/**
+ * Sửa nội dung một bài ĐÃ ĐĂNG trên nền tảng.
+ *
+ * Đã dò endpoint thật ngày 14/09/2026: PATCH trả 405, còn PUT /posts/{id} có
+ * thật — mã sai định dạng trả "Invalid post ID format", mã đúng định dạng mà
+ * không tồn tại trả "Post not found".
+ *
+ * GIỚI HẠN CỦA NỀN TẢNG: Facebook chỉ cho sửa phần chữ của bài đã đăng, KHÔNG
+ * cho đổi ảnh. Muốn đổi ảnh thì phải gỡ bài rồi đăng lại.
+ */
+export async function updatePost(params: {
+  postId: string;
+  content: string;
+}): Promise<Record<string, unknown>> {
+  return request(`/posts/${encodeURIComponent(params.postId)}`, {
+    method: "PUT",
+    body: { content: params.content },
+  });
+}
+
+/** Gỡ một bài đã đăng khỏi nền tảng. Không lấy lại được. */
+export async function deletePost(postId: string): Promise<Record<string, unknown>> {
+  return request(`/posts/${encodeURIComponent(postId)}`, { method: "DELETE" });
 }
 
 export async function getPost(postId: string): Promise<Record<string, unknown>> {
   return request(`/posts/${encodeURIComponent(postId)}`);
+}
+
+// ---------------------------------------------------------------------------
+// Tải ảnh và video lên
+// ---------------------------------------------------------------------------
+
+/** Các định dạng Zernio nhận, kèm loại tương ứng để gửi trong mediaItems. */
+const MEDIA_TYPES: Record<string, MediaType> = {
+  "image/jpeg": "image",
+  "image/jpg": "image",
+  "image/png": "image",
+  "image/webp": "image",
+  "image/gif": "gif",
+  "video/mp4": "video",
+  "video/mpeg": "video",
+  "video/quicktime": "video",
+  "video/avi": "video",
+  "video/x-msvideo": "video",
+  "video/webm": "video",
+  "video/x-m4v": "video",
+  "application/pdf": "document",
+};
+
+/** Giới hạn của Zernio: 5GB cho ảnh và video. */
+export const MEDIA_MAX_BYTES = 5 * 1024 * 1024 * 1024;
+
+export function mediaTypeFor(contentType: string): MediaType | null {
+  return MEDIA_TYPES[contentType.toLowerCase()] ?? null;
+}
+
+/**
+ * Xin địa chỉ tải lên cho một tệp.
+ *
+ * Luồng của Zernio gồm ba bước: xin địa chỉ tạm ở đây, PUT tệp thẳng lên địa
+ * chỉ đó, rồi dùng publicUrl trong mediaItems của bài đăng.
+ *
+ * Vì sao trình duyệt tự PUT chứ không đẩy tệp qua server của mình: bước PUT
+ * không cần khoá API (chữ ký đã nằm trong địa chỉ), nên cho video vài trăm MB
+ * đi xuyên qua tiến trình Node chỉ tốn bộ nhớ và làm chậm mọi yêu cầu khác mà
+ * không thêm chút an toàn nào.
+ *
+ * Lưu ý thời hạn: tệp nằm ở kho tạm 7 ngày, đến khi bài dùng nó được đăng thì
+ * Zernio mới chuyển sang kho vĩnh viễn. Bài hẹn lịch xa hơn 7 ngày sẽ lên sóng
+ * mà mất ảnh.
+ */
+export async function presignMedia(params: {
+  filename: string;
+  contentType: string;
+  size?: number;
+}): Promise<{
+  uploadUrl: string;
+  publicUrl: string;
+  type: MediaType;
+  expiresIn: number;
+}> {
+  const type = mediaTypeFor(params.contentType);
+  if (!type) {
+    throw new ZernioError(
+      `Định dạng ${params.contentType} không được hỗ trợ. ` +
+        `Dùng JPG, PNG, WebP, GIF, MP4, MOV hoặc PDF.`,
+      400
+    );
+  }
+
+  if (params.size !== undefined && params.size > MEDIA_MAX_BYTES) {
+    throw new ZernioError("Tệp vượt quá giới hạn 5GB của Zernio.", 400);
+  }
+
+  const presigned = await request<{
+    uploadUrl?: string;
+    publicUrl?: string;
+    key?: string;
+    expiresIn?: number;
+  }>("/media/presign", {
+    method: "POST",
+    body: {
+      filename: params.filename,
+      contentType: params.contentType,
+      ...(params.size !== undefined ? { size: params.size } : {}),
+    },
+  });
+
+  if (!presigned.uploadUrl || !presigned.publicUrl) {
+    throw new ZernioError("Zernio không trả về địa chỉ tải lên.", 502);
+  }
+
+  return {
+    uploadUrl: presigned.uploadUrl,
+    publicUrl: presigned.publicUrl,
+    type,
+    expiresIn: presigned.expiresIn ?? 3_600,
+  };
 }
 
 // ---------------------------------------------------------------------------

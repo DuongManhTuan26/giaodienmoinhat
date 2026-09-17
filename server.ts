@@ -4,6 +4,10 @@ import { verifyConnection, closePool } from "./server/db.js";
 import { runMigrations } from "./server/migrate.js";
 import { pruneExpiredSessions } from "./server/auth.js";
 import { startWorker, stopWorker, recoverStuckEvents } from "./server/worker.js";
+import {
+  startTelegramPolling,
+  stopTelegramPolling,
+} from "./server/services/telegram.js";
 
 /**
  * Điểm khởi động của hệ thống.
@@ -55,6 +59,12 @@ async function main() {
 
   startWorker();
 
+  // Vòng lặp nhận lệnh /start của Telegram. Chạy song song, không chờ: đây là
+  // vòng lặp vô hạn và không phải điều kiện để server phục vụ request.
+  void startTelegramPolling().catch((error) =>
+    console.error("[telegram] Vòng lặp liên kết dừng bất thường:", error)
+  );
+
   // Dọn phiên hết hạn mỗi giờ. unref() để tác vụ này không giữ tiến trình sống.
   const sessionCleanup = setInterval(
     () => {
@@ -71,6 +81,7 @@ async function main() {
     process.on(signal, () => {
       console.log(`\n[tắt] Nhận ${signal}, đang đóng…`);
       stopWorker();
+      stopTelegramPolling();
       server.close(() => {
         closePool()
           .catch(() => {})

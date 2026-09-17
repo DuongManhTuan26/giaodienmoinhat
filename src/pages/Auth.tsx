@@ -103,7 +103,23 @@ export default function Auth({ onLogin, onRegister }: {
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center justify-between">
               <label className="font-label-sm text-on-surface">Mật khẩu</label>
-              {mode === 'login' && <a href="#" className="font-body-md text-primary text-sm hover:underline">Quên mật khẩu?</a>}
+              {/*
+                Chưa có đặt lại mật khẩu tự động vì hệ thống chưa nối dịch vụ
+                gửi email. Nói thẳng và chỉ đường liên hệ, còn hơn một link bấm
+                vào không có gì xảy ra như trước.
+              */}
+              {mode === 'login' && (
+                <button
+                  type="button"
+                  onClick={() => setError(
+                    'Hiện chưa tự đặt lại mật khẩu được. Vui lòng liên hệ bộ phận hỗ trợ để được cấp lại, ' +
+                    'sau khi đăng nhập bạn đổi mật khẩu trong menu tài khoản (góc trên bên phải).'
+                  )}
+                  className="font-body-md text-primary text-sm hover:underline"
+                >
+                  Quên mật khẩu?
+                </button>
+              )}
             </div>
             <input 
               type="password" 

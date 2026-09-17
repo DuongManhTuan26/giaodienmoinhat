@@ -3,7 +3,34 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { clsx } from 'clsx';
 import { useActivePage, PLATFORM_BADGE } from '../lib/ActivePage';
 
-export default function Sidebar({ onLogout }: { onLogout?: () => void }) {
+/**
+ * Địa chỉ trợ giúp của CHÍNH mình.
+ *
+ * Trước đây nút này mở docs.zernio.com. Đó là tài liệu của nhà cung cấp hạ
+ * tầng: khách trả tiền cho mình lại nhìn thấy tên và trang bán hàng của Zernio,
+ * và chỉ cần một cú bấm là họ tự mua thẳng bên đó, bỏ qua mình. Zernio là
+ * đường ống chạy phía sau, không phải thứ khách hàng cần biết tới.
+ *
+ * Đặt VITE_SUPPORT_URL trong .env để trỏ tới kênh hỗ trợ thật (trang trợ giúp,
+ * Zalo, hoặc mailto:). Chưa đặt thì đưa về trang Gói dịch vụ trong app, nơi đã
+ * có thông tin liên hệ — vẫn nằm trong app, không lộ nhà cung cấp.
+ */
+const SUPPORT_URL = import.meta.env.VITE_SUPPORT_URL || '/pricing';
+const IS_EXTERNAL_SUPPORT = /^https?:|^mailto:/.test(SUPPORT_URL);
+
+export default function Sidebar({
+  onLogout,
+  laQuanTri = false,
+}: {
+  onLogout?: () => void;
+  /*
+   * Chỉ quản trị mới thấy mục Quản Trị Hệ Thống.
+   * Giấu trên giao diện không phải là bảo vệ — máy chủ vẫn kiểm lại vai trò từ
+   * database ở mọi lời gọi. Đây chỉ để người thường không nhìn thấy cái nút
+   * họ không bấm được.
+   */
+  laQuanTri?: boolean;
+}) {
   const navigate = useNavigate();
   const { accounts, activeAccount, activeAccountId, setActiveAccountId } = useActivePage();
   const [pageMenuOpen, setPageMenuOpen] = useState(false);
@@ -25,6 +52,9 @@ export default function Sidebar({ onLogout }: { onLogout?: () => void }) {
     { name: 'Đơn Hàng', icon: 'receipt_long', path: '/orders' },
     { name: 'Báo Cáo Telegram', icon: 'notifications_active', path: '/telegram' },
     { name: 'Gói Dịch Vụ', icon: 'workspace_premium', path: '/pricing' },
+    ...(laQuanTri
+      ? [{ name: 'Quản Trị Hệ Thống', icon: 'admin_panel_settings', path: '/admin' }]
+      : []),
   ];
 
   const renderNavGroup = (items: any[]) => (
@@ -217,9 +247,8 @@ export default function Sidebar({ onLogout }: { onLogout?: () => void }) {
           <div className="flex flex-col" style={{ gap: '4px' }}>
             <a
               className="flex items-center gap-3 px-3 rounded-lg hover:bg-white/5 transition-colors group shrink-0"
-              href="https://docs.zernio.com/"
-              target="_blank"
-              rel="noreferrer"
+              href={SUPPORT_URL}
+              {...(IS_EXTERNAL_SUPPORT ? { target: '_blank', rel: 'noreferrer' } : {})}
               style={{
                 color: 'rgba(232,237,242,0.4)',
                 fontSize: '13px',

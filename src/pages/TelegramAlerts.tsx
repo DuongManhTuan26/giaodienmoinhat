@@ -29,6 +29,21 @@ export default function TelegramAlerts() {
   const [chatId, setChatId] = useState('');
   const [botTokenInput, setBotTokenInput] = useState('');
   const [verifiedAt, setVerifiedAt] = useState<string | null>(null);
+  const [usesPlatformBot, setUsesPlatformBot] = useState(true);
+  const [linkedName, setLinkedName] = useState<string | null>(null);
+  const [linkUrl, setLinkUrl] = useState('');
+  /*
+   * Mã liên kết, giữ riêng để dựng câu lệnh gõ tay.
+   *
+   * Nút "START BOT" trên trang t.me là thẻ <a href="tg://resolve?...">. Giao
+   * thức tg:// chỉ ứng dụng Telegram cài trên máy mới mở được — máy chưa cài
+   * thì bấm không có phản ứng gì, trông hệt như nút hỏng. Phải luôn có đường
+   * thoát bằng tay, nếu không chủ shop mắc kẹt không cách nào bật được báo cáo.
+   */
+  const [linkCode, setLinkCode] = useState('');
+  const [botUsername, setBotUsername] = useState('');
+  const [daChepLenh, setDaChepLenh] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [logs, setLogs] = useState<LogRow[]>([]);
   const [events, setEvents] = useState<Record<string, boolean>>({});
   const [dailySummaryTime, setDailySummaryTime] = useState('20:00');
@@ -44,7 +59,13 @@ export default function TelegramAlerts() {
       const { data } = await api.settings.telegram();
       setHasToken(data.hasToken);
       setChatId(data.chatId);
-      setIsConnected(data.enabled && data.hasToken && Boolean(data.chatId));
+      setUsesPlatformBot(data.usesPlatformBot);
+      setLinkedName(data.linkedAccountName);
+      // Dùng bot chung thì chỉ cần đã bấm Start. Dùng bot riêng thì phải có
+      // cả token của shop.
+      setIsConnected(
+        data.enabled && Boolean(data.chatId) && (data.usesPlatformBot || data.hasToken),
+      );
       setVerifiedAt(data.verifiedAt);
       setLogs(data.logs);
       setEvents(data.events ?? {});
@@ -74,14 +95,57 @@ export default function TelegramAlerts() {
 
   const eventOn = (key: string) => events[key] !== false;
 
-  /** Lưu Bot Token và Chat ID rồi gửi tin thử để xác nhận. */
+  /**
+   * Kết nối bằng một lần bấm.
+   *
+   * Hệ thống tạo liên kết riêng cho gian hàng này, mở Telegram, khách bấm Start.
+   * Sau đó trang tự dò trạng thái nên khách không phải tải lại.
+   */
+  const handleLink = async () => {
+    setBusy(true);
+    setErrorMessage('');
+    setNotice('');
+    try {
+      const { data } = await api.settings.linkTelegram();
+      setLinkUrl(data.url);
+      setLinkCode(data.code);
+      setBotUsername(data.botUsername);
+      window.open(data.url, '_blank', 'noopener,noreferrer');
+      setNotice('Đã mở Telegram. Bấm START trong đó, trang này sẽ tự cập nhật.');
+
+      // Dò trong hai phút. Đủ để khách chuyển sang Telegram và bấm Start,
+      // và tự dừng để không dò mãi nếu khách bỏ giữa đường.
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 3_000));
+        const fresh = await api.settings.telegram();
+        if (fresh.data.connected) {
+          setLinkUrl('');
+          setLinkCode('');
+          setNotice(
+            fresh.data.linkedAccountName
+              ? `Đã kết nối với ${fresh.data.linkedAccountName}.`
+              : 'Đã kết nối Telegram.',
+          );
+          await load();
+          return;
+        }
+      }
+      setNotice('Chưa nhận được xác nhận từ Telegram. Vui lòng mở lại liên kết bên dưới.');
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không tạo được liên kết');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Đường nâng cao: shop tự dùng bot riêng của mình. */
   const handleConnect = async () => {
     if (!botTokenInput.trim() && !hasToken) {
-      setErrorMessage('Hãy dán Bot Token lấy từ @BotFather.');
+      setErrorMessage('Vui lòng dán Bot Token lấy từ @BotFather.');
       return;
     }
     if (!chatId.trim()) {
-      setErrorMessage('Hãy nhập Chat ID. Nhắn /start cho bot rồi lấy Chat ID từ @userinfobot.');
+      setErrorMessage('Vui lòng nhập Chat ID. Nhắn /start cho bot rồi lấy Chat ID từ @userinfobot.');
       return;
     }
 
@@ -129,7 +193,12 @@ export default function TelegramAlerts() {
     if (!confirm('Ngắt kết nối Telegram? Hệ thống sẽ ngừng gửi thông báo.')) return;
     setBusy(true);
     try {
-      await api.settings.saveTelegram({ enabled: false, events });
+      if (usesPlatformBot) {
+        // Bot chung: bỏ hẳn liên kết, vì nối lại chỉ mất một lần bấm.
+        await api.settings.unlinkTelegram();
+      } else {
+        await api.settings.saveTelegram({ enabled: false, events });
+      }
       await load();
     } catch (error) {
       setErrorMessage(error instanceof ApiError ? error.message : 'Không ngắt kết nối được');
@@ -217,7 +286,15 @@ export default function TelegramAlerts() {
                 <h2 className="text-xl font-bold text-on-surface">Đã kết nối</h2>
                 <div className="w-2.5 h-2.5 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"></div>
               </div>
-              <p className="text-on-surface-variant font-medium mb-0.5">Chat ID: <span className="text-on-surface font-bold">{chatId || '(chưa có)'}</span></p>
+              {/* Bot chung: hiện tên người đã bấm Start — dễ hiểu hơn dãy số.
+                  Bot riêng: vẫn hiện Chat ID vì đó là thứ họ tự nhập. */}
+              <p className="text-on-surface-variant font-medium mb-0.5">
+                {usesPlatformBot ? (
+                  <>Gửi tới: <span className="text-on-surface font-bold">{linkedName ?? `Chat ID ${chatId}`}</span></>
+                ) : (
+                  <>Chat ID: <span className="text-on-surface font-bold">{chatId || '(chưa có)'}</span></>
+                )}
+              </p>
               <p className="text-xs text-on-surface-variant/70">{verifiedAt ? `Đã xác nhận ${new Date(verifiedAt).toLocaleDateString('vi-VN')}` : 'Chưa gửi tin thử để xác nhận'}</p>
             </div>
           </div>
@@ -245,40 +322,134 @@ export default function TelegramAlerts() {
               <p className="text-on-surface-variant text-sm mb-4">Kết nối Telegram để nhận thông báo đơn hàng ngay lập tức</p>
               
               <div className="flex flex-col sm:flex-row sm:items-center gap-x-6 gap-y-2 text-sm font-medium text-on-surface-variant">
-                <span className="flex items-center gap-2"><span className="w-5 h-5 rounded-full bg-surface-variant flex items-center justify-center text-xs font-bold text-on-surface shrink-0">1</span> Nhắn <b className="text-on-surface">/newbot</b> cho <b className="text-on-surface">@BotFather</b> để lấy Bot Token</span>
-                <span className="flex items-center gap-2"><span className="w-5 h-5 rounded-full bg-surface-variant flex items-center justify-center text-xs font-bold text-on-surface shrink-0">2</span> Nhắn <b className="text-on-surface">/start</b> cho bot vừa tạo</span>
-                <span className="flex items-center gap-2"><span className="w-5 h-5 rounded-full bg-surface-variant flex items-center justify-center text-xs font-bold text-on-surface shrink-0">3</span> Lấy Chat ID từ <b className="text-on-surface">@userinfobot</b></span>
+                <span className="flex items-center gap-2"><span className="w-5 h-5 rounded-full bg-surface-variant flex items-center justify-center text-xs font-bold text-on-surface shrink-0">1</span> Bấm <b className="text-on-surface">Kết nối Telegram</b> bên dưới</span>
+                <span className="flex items-center gap-2"><span className="w-5 h-5 rounded-full bg-surface-variant flex items-center justify-center text-xs font-bold text-on-surface shrink-0">2</span> Telegram mở ra, bấm <b className="text-on-surface">START</b></span>
+                <span className="flex items-center gap-2"><span className="w-5 h-5 rounded-full bg-surface-variant flex items-center justify-center text-xs font-bold text-on-surface shrink-0">3</span> Xong, không cần cài đặt gì thêm</span>
               </div>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider">Bot Token</label>
-              <input
-                type="password"
-                value={botTokenInput}
-                onChange={(e) => setBotTokenInput(e.target.value)}
-                placeholder={hasToken ? '••••••  (đã lưu, để trống nếu không đổi)' : '123456789:ABCdef...'}
-                className="w-full bg-surface-container border border-outline-variant/50 rounded-lg px-3 py-2.5 text-sm text-on-surface focus:border-primary focus:ring-1 focus:ring-primary focus:outline-none transition-all font-mono"
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider">Chat ID</label>
-              <input
-                type="text"
-                value={chatId}
-                onChange={(e) => setChatId(e.target.value)}
-                placeholder="Ví dụ: 123456789 hoặc -1001234567890"
-                className="w-full bg-surface-container border border-outline-variant/50 rounded-lg px-3 py-2.5 text-sm text-on-surface focus:border-primary focus:ring-1 focus:ring-primary focus:outline-none transition-all font-mono"
-              />
-            </div>
-          </div>
-
-          <button className="w-full md:w-auto md:self-start px-8 py-3 bg-[#2AABEE] text-white font-bold rounded-xl shadow-[0_4px_15px_rgba(42,171,238,0.4)] hover:scale-105 transition-transform flex items-center justify-center gap-2 shrink-0 disabled:opacity-60 disabled:hover:scale-100" onClick={handleConnect} disabled={busy}>
-            <span className="material-symbols-outlined text-[20px]">link</span>
-            {busy ? 'Đang kết nối…' : 'Kết nối và gửi tin thử'}
+          <button className="w-full md:w-auto md:self-start px-8 py-3 bg-[#2AABEE] text-white font-bold rounded-xl shadow-[0_4px_15px_rgba(42,171,238,0.4)] hover:scale-105 transition-transform flex items-center justify-center gap-2 shrink-0 disabled:opacity-60 disabled:hover:scale-100" onClick={handleLink} disabled={busy}>
+            <span className="material-symbols-outlined text-[20px]">send</span>
+            {busy ? 'Đang chờ bạn bấm START…' : 'Kết nối Telegram'}
           </button>
+
+          {linkUrl && (
+            <div className="bg-surface-container-high rounded-xl p-4 space-y-3">
+              <p className="text-sm text-on-surface font-bold flex items-center gap-2">
+                <span className="material-symbols-outlined text-[18px] text-primary">help</span>
+                Bấm START trong Telegram nhưng không có phản hồi?
+              </p>
+              <p className="text-xs text-on-surface-variant leading-relaxed">
+                Nút START trên trang t.me chỉ hoạt động khi máy bạn đã cài ứng dụng Telegram.
+                Nếu chưa cài, nút sẽ không phản hồi. Bạn có thể dùng một trong hai cách dưới
+                đây mà không cần cài thêm phần mềm.
+              </p>
+
+              <div className="space-y-2">
+                <p className="text-xs font-bold text-on-surface-variant uppercase tracking-wider">
+                  Cách 1 — mở bằng Telegram Web
+                </p>
+                <a
+                  href={`https://web.telegram.org/k/#@${botUsername}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm text-primary font-bold hover:underline break-all"
+                >
+                  web.telegram.org → mở @{botUsername}
+                </a>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-xs font-bold text-on-surface-variant uppercase tracking-wider">
+                  Cách 2 — gõ tay câu lệnh này cho @{botUsername}
+                </p>
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 text-sm font-mono bg-surface px-3 py-2 rounded-lg border border-outline-variant text-on-surface break-all select-all">
+                    /start {linkCode}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard
+                        ?.writeText(`/start ${linkCode}`)
+                        .then(() => {
+                          setDaChepLenh(true);
+                          setTimeout(() => setDaChepLenh(false), 2_000);
+                        })
+                        .catch(() => {
+                          /* Trình duyệt chặn thì chủ shop vẫn bôi đen chép tay được. */
+                        });
+                    }}
+                    className="px-3 py-2 bg-surface-container text-on-surface text-xs font-bold rounded-lg border border-outline hover:border-primary transition-colors shrink-0"
+                  >
+                    {daChepLenh ? 'Đã chép' : 'Chép'}
+                  </button>
+                </div>
+                <p className="text-xs text-on-surface-variant">
+                  Gửi câu lệnh này cho bot từ điện thoại hoặc máy tính. Mỗi mã chỉ dùng
+                  được một lần.
+                </p>
+              </div>
+
+              <p className="text-xs text-on-surface-variant/70 pt-1 border-t border-outline-variant/50">
+                Hoặc mở lại{' '}
+                <a href={linkUrl} target="_blank" rel="noopener noreferrer" className="text-primary font-bold hover:underline break-all">
+                  liên kết gốc
+                </a>{' '}
+                nếu bạn đã cài Telegram trên máy.
+              </p>
+            </div>
+          )}
+
+          {/* Đường nâng cao: dành cho người muốn tự quản lý bot của mình. */}
+          <div className="border-t border-outline-variant/50 pt-4">
+            <button
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="text-xs font-bold text-on-surface-variant uppercase tracking-wider flex items-center gap-1.5 hover:text-on-surface transition-colors"
+            >
+              <span className="material-symbols-outlined text-[16px]">{showAdvanced ? 'expand_less' : 'expand_more'}</span>
+              Tôi muốn dùng bot Telegram riêng của mình
+            </button>
+
+            {showAdvanced && (
+              <div className="mt-4 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-x-6 gap-y-2 text-sm font-medium text-on-surface-variant">
+                  <span className="flex items-center gap-2"><span className="w-5 h-5 rounded-full bg-surface-variant flex items-center justify-center text-xs font-bold text-on-surface shrink-0">1</span> Nhắn <b className="text-on-surface">/newbot</b> cho <b className="text-on-surface">@BotFather</b> để lấy Bot Token</span>
+                  <span className="flex items-center gap-2"><span className="w-5 h-5 rounded-full bg-surface-variant flex items-center justify-center text-xs font-bold text-on-surface shrink-0">2</span> Nhắn <b className="text-on-surface">/start</b> cho bot vừa tạo</span>
+                  <span className="flex items-center gap-2"><span className="w-5 h-5 rounded-full bg-surface-variant flex items-center justify-center text-xs font-bold text-on-surface shrink-0">3</span> Lấy Chat ID từ <b className="text-on-surface">@userinfobot</b></span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider">Bot Token</label>
+                    <input
+                      type="password"
+                      value={botTokenInput}
+                      onChange={(e) => setBotTokenInput(e.target.value)}
+                      placeholder={hasToken ? '••••••  (đã lưu, để trống nếu không đổi)' : '123456789:ABCdef...'}
+                      className="w-full bg-surface-container border border-outline-variant/50 rounded-lg px-3 py-2.5 text-sm text-on-surface focus:border-primary focus:ring-1 focus:ring-primary focus:outline-none transition-all font-mono"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider">Chat ID</label>
+                    <input
+                      type="text"
+                      value={chatId}
+                      onChange={(e) => setChatId(e.target.value)}
+                      placeholder="Ví dụ: 123456789 hoặc -1001234567890"
+                      className="w-full bg-surface-container border border-outline-variant/50 rounded-lg px-3 py-2.5 text-sm text-on-surface focus:border-primary focus:ring-1 focus:ring-primary focus:outline-none transition-all font-mono"
+                    />
+                  </div>
+                </div>
+
+                <button className="w-full md:w-auto md:self-start px-8 py-3 bg-surface-container border border-outline-variant text-on-surface font-bold rounded-xl hover:bg-surface-variant transition-colors flex items-center justify-center gap-2 shrink-0 disabled:opacity-60" onClick={handleConnect} disabled={busy}>
+                  <span className="material-symbols-outlined text-[20px]">link</span>
+                  {busy ? 'Đang kết nối…' : 'Dùng bot riêng và gửi tin thử'}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
         )}
       </div>

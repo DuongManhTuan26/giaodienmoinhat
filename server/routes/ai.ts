@@ -4,6 +4,14 @@ import { requireAuth } from "../auth.js";
 import { AppError, requireString, route } from "../http.js";
 import { chat, chatJson, asRecord, stringArray, DEFAULT_MODELS } from "../services/ai.js";
 import { extractOrderInfo, suggestReply } from "../services/sales-ai.js";
+import { generatePostContent } from "../services/content-ai.js";
+import { docCauHinh, MAC_DINH } from "../services/autopilot.js";
+import { docChuTuAnh, ANH_HOP_LE, GIOI_HAN_ANH } from "../services/vision.js";
+import { docCacBuoc } from "../services/sales-stages.js";
+import { docTuChu } from "../services/sales-autonomy.js";
+import { boMarkdown, DAN_KHONG_MARKDOWN } from "../services/text.js";
+import { taoAnhChoBai, docPhongCachDaLuu, PHONG_CACH_MAC_DINH } from "../services/image-ai.js";
+import { anDiaChiKho } from "../services/media-proxy.js";
 
 export const aiRouter = Router();
 
@@ -60,22 +68,268 @@ aiRouter.put(
     const kind = assertKind(req.params.kind);
     const body = req.body ?? {};
 
+    /*
+     * CHỈ ghi những trường màn hình thật sự gửi lên.
+     *
+     * Lỗi cũ, tái hiện được: hộp thoại Vai trò chỉ gửi systemPrompt, nhưng câu
+     * lệnh lại ghi đè cả dòng — nên mỗi lần bấm "Lưu cấu hình AI" là tone tụt
+     * về 'friendly' và settings bị thay bằng {}. Với AI viết bài, settings
+     * chính là chỗ chứa TOÀN BỘ lịch tự đăng: ngày, khung giờ, danh sách chủ
+     * đề, chốt chặn. Một cú bấm ở màn hình khác xoá sạch, không hỏi, không báo.
+     *
+     * Đo trước khi sửa:
+     *   trước: tone=professional  settings={autoPilot:{…}, autoPublish:true}
+     *   sau:   tone=friendly      settings={}
+     *
+     * NULL ở đây nghĩa là "màn hình không đụng tới trường này", khác hẳn với
+     * "màn hình muốn xoá trắng nó".
+     */
     const updated = await queryOne(
       `INSERT INTO ai_configs (user_id, kind, system_prompt, tone, settings)
-       VALUES ($1, $2, $3, $4, $5)
+       VALUES ($1, $2, COALESCE($3, ''), COALESCE($4, 'friendly'),
+               COALESCE($5::jsonb, '{}'::jsonb))
        ON CONFLICT (user_id, kind) DO UPDATE SET
-         system_prompt = EXCLUDED.system_prompt,
-         tone          = EXCLUDED.tone,
-         settings      = EXCLUDED.settings,
+         system_prompt = COALESCE($3, ai_configs.system_prompt),
+         tone          = COALESCE($4, ai_configs.tone),
+         settings      = COALESCE($5::jsonb, ai_configs.settings),
          updated_at    = now()
        RETURNING kind, system_prompt, tone, settings, updated_at`,
       [
         req.user!.id,
         kind,
-        typeof body.systemPrompt === "string" ? body.systemPrompt : "",
-        typeof body.tone === "string" ? body.tone : "friendly",
-        JSON.stringify(body.settings ?? {}),
+        typeof body.systemPrompt === "string" ? body.systemPrompt : null,
+        typeof body.tone === "string" ? body.tone : null,
+        body.settings === undefined ? null : JSON.stringify(body.settings),
       ]
+    );
+
+    res.json({ success: true, data: updated });
+  })
+);
+
+/**
+ * Chế độ AI bán hàng tự chủ.
+ *
+ * Bật lên là AI tự chốt tiền, tự lên đơn, không ai duyệt. Vì vậy mặc định TẮT
+ * và chỉ chủ shop bật được — hệ thống không tự quyết thay.
+ */
+aiRouter.get(
+  "/sales-autonomy",
+  route(async (req, res) => {
+    const row = await queryOne<{ settings: Record<string, unknown> }>(
+      "SELECT settings FROM ai_configs WHERE user_id = $1 AND kind = 'sales'",
+      [req.user!.id]
+    );
+    res.json({ success: true, data: { config: docTuChu(row?.settings?.tuChu) } });
+  })
+);
+
+aiRouter.put(
+  "/sales-autonomy",
+  route(async (req, res) => {
+    const sach = docTuChu(req.body?.config);
+
+    const updated = await queryOne<{ settings: Record<string, unknown> }>(
+      `INSERT INTO ai_configs (user_id, kind, settings)
+       VALUES ($1, 'sales', $2::jsonb)
+       ON CONFLICT (user_id, kind) DO UPDATE SET
+         settings   = ai_configs.settings || EXCLUDED.settings,
+         updated_at = now()
+       RETURNING settings`,
+      [req.user!.id, JSON.stringify({ tuChu: sach })]
+    );
+
+    /*
+     * Bật tự chủ thì CỨU NGAY những hội thoại đang bị bỏ.
+     *
+     * Đã xảy ra thật: AI nhường quyền lúc 18:28 khi tự chủ còn tắt, chủ shop
+     * bật tự chủ lúc 18:37, nhưng hội thoại vẫn nằm im vì cơ chế hồi sinh chỉ
+     * chạy khi khách nhắn tin TIẾP. Khách không nhắn nữa là chết vĩnh viễn —
+     * mà chủ shop nhìn công tắc thấy "đang chạy" nên tưởng mọi thứ đã ổn.
+     *
+     * KHÔNG đụng vào hội thoại status = 'human': ở đó chủ shop đang tự tay
+     * trả lời, xen vào là hai bên cùng nhắn một khách.
+     */
+    let daCuu = 0;
+    if (sach.bat) {
+      const cuu = await query(
+        `UPDATE conversations
+            SET status = 'ai', ai_enabled = TRUE, handoff_reason = NULL,
+                handoff_at = NULL, updated_at = now()
+          WHERE user_id = $1 AND status = 'waiting_human'
+          RETURNING id`,
+        [req.user!.id]
+      );
+      daCuu = cuu.rowCount ?? 0;
+      if (daCuu > 0) {
+        console.log(`[tự chủ] Bật tự chủ: đã trả ${daCuu} hội thoại lại cho AI.`);
+      }
+    }
+
+    res.json({
+      success: true,
+      data: { config: docTuChu(updated?.settings?.tuChu), hoiThoaiDaCuu: daCuu },
+    });
+  })
+);
+
+/**
+ * Các bước bán hàng qua Messenger.
+ *
+ * Đọc và ghi đều đi qua docCacBuoc nên luôn đủ 6 bước theo đúng thứ tự, dù
+ * giao diện gửi lên thiếu hay thừa. Chủ shop chỉ được đổi hai thứ: bật/tắt và
+ * lời dặn riêng — mục tiêu của từng bước là phần khung, không cho sửa, vì đó
+ * là thứ giữ cho AI không nhảy thẳng vào xin số điện thoại.
+ */
+aiRouter.get(
+  "/sales-stages",
+  route(async (req, res) => {
+    const row = await queryOne<{ settings: Record<string, unknown> }>(
+      "SELECT settings FROM ai_configs WHERE user_id = $1 AND kind = 'sales'",
+      [req.user!.id]
+    );
+    res.json({ success: true, data: { stages: docCacBuoc(row?.settings?.stages) } });
+  })
+);
+
+aiRouter.put(
+  "/sales-stages",
+  route(async (req, res) => {
+    const sach = docCacBuoc(req.body?.stages);
+
+    /*
+     * Xoá hết bước thì AI không còn kịch bản nào để đi. Chặn ở đây thay vì âm
+     * thầm nhét lại bộ mặc định — nhét lại nghĩa là chủ shop xoá mà không xoá
+     * được, đó mới là thứ khó hiểu.
+     */
+    if (!Array.isArray(req.body?.stages) || req.body.stages.length === 0) {
+      throw new AppError("Phải giữ lại ít nhất một bước bán hàng.", 400);
+    }
+    if (!sach.some((b) => b.enabled)) {
+      throw new AppError(
+        "Phải bật ít nhất một bước, nếu không AI không biết phải làm gì khi khách nhắn tới.",
+        400
+      );
+    }
+    if (sach.some((b) => !b.mucTieu.trim())) {
+      throw new AppError(
+        "Mỗi bước phải ghi rõ AI cần làm gì ở bước đó, không được để trống.",
+        400
+      );
+    }
+
+    const updated = await queryOne<{ settings: Record<string, unknown> }>(
+      `INSERT INTO ai_configs (user_id, kind, settings)
+       VALUES ($1, 'sales', $2::jsonb)
+       ON CONFLICT (user_id, kind) DO UPDATE SET
+         settings   = ai_configs.settings || EXCLUDED.settings,
+         updated_at = now()
+       RETURNING settings`,
+      [
+        req.user!.id,
+        JSON.stringify({
+          stages: sach.map((b) => ({ id: b.id, ten: b.ten, mucTieu: b.mucTieu, enabled: b.enabled })),
+        }),
+      ]
+    );
+
+    res.json({ success: true, data: { stages: docCacBuoc(updated?.settings?.stages) } });
+  })
+);
+
+/**
+ * Lịch tự viết và tự đăng bài.
+ *
+ * Đọc và ghi đi qua docCauHinh để mọi giá trị rác bị loại ngay tại cửa: giờ
+ * sai định dạng, thứ ngoài 0-6, chủ đề rỗng, số phút chờ vô lý. Giao diện có
+ * thể sai, nhưng thứ chạy lúc 8 giờ sáng thì không được phép sai.
+ */
+aiRouter.get(
+  "/auto-pilot",
+  route(async (req, res) => {
+    const row = await queryOne<{ settings: Record<string, unknown> }>(
+      "SELECT settings FROM ai_configs WHERE user_id = $1 AND kind = 'content'",
+      [req.user!.id]
+    );
+
+    const runs = await query(
+      `SELECT slot_key, status, topic, post_id, note, created_at
+         FROM auto_pilot_runs WHERE user_id = $1
+        ORDER BY id DESC LIMIT 20`,
+      [req.user!.id]
+    );
+
+    res.json({
+      success: true,
+      data: {
+        config: row?.settings?.autoPilot ? docCauHinh(row.settings.autoPilot) : MAC_DINH,
+        runs: runs.rows,
+      },
+    });
+  })
+);
+
+aiRouter.put(
+  "/auto-pilot",
+  route(async (req, res) => {
+    const sach = docCauHinh(req.body?.config);
+
+    // Bật lịch mà không có chủ đề nào thì mỗi sáng sẽ chỉ ghi một dòng "bỏ
+    // lượt" vào nhật ký. Nói ngay tại đây thay vì để chủ shop chờ mấy ngày.
+    if (sach.enabled && sach.topics.length === 0) {
+      throw new AppError(
+        "Vui lòng nhập ít nhất một chủ đề trước khi bật lịch, nếu không AI sẽ không có nội dung để viết.",
+        400
+      );
+    }
+
+    if (sach.enabled && sach.days.length === 0) {
+      throw new AppError(
+        "Vui lòng chọn ít nhất một ngày trong tuần, nếu không lịch sẽ không chạy.",
+        400
+      );
+    }
+
+    const updated = await queryOne(
+      `INSERT INTO ai_configs (user_id, kind, settings)
+       VALUES ($1, 'content', $2::jsonb)
+       ON CONFLICT (user_id, kind) DO UPDATE SET
+         settings   = ai_configs.settings || EXCLUDED.settings,
+         updated_at = now()
+       RETURNING settings`,
+      [req.user!.id, JSON.stringify({ autoPilot: sach })]
+    );
+
+    res.json({ success: true, data: { config: sach, saved: !!updated } });
+  })
+);
+
+/**
+ * Sửa một vài khoá trong `settings` mà không đụng tới phần còn lại.
+ *
+ * PUT ở trên ghi đè cả bản ghi: ai gọi nó chỉ để lưu một lựa chọn nhỏ sẽ xoá
+ * sạch lời huấn luyện chủ shop đã nhập ở màn hình Huấn luyện AI. Route này gộp
+ * bằng toán tử `||` của JSONB nên mỗi màn hình chỉ ghi đúng phần của mình.
+ */
+aiRouter.patch(
+  "/configs/:kind/settings",
+  route(async (req, res) => {
+    const kind = assertKind(req.params.kind);
+    const body = req.body ?? {};
+    const patch = body.settings;
+
+    if (typeof patch !== "object" || patch === null || Array.isArray(patch)) {
+      throw new AppError("Thiếu phần cài đặt cần lưu.", 400);
+    }
+
+    const updated = await queryOne(
+      `INSERT INTO ai_configs (user_id, kind, settings)
+       VALUES ($1, $2, $3::jsonb)
+       ON CONFLICT (user_id, kind) DO UPDATE SET
+         settings   = ai_configs.settings || EXCLUDED.settings,
+         updated_at = now()
+       RETURNING kind, system_prompt, tone, settings, updated_at`,
+      [req.user!.id, kind, JSON.stringify(patch)]
     );
 
     res.json({ success: true, data: updated });
@@ -85,9 +339,13 @@ aiRouter.put(
 /**
  * Nạp tài liệu huấn luyện.
  *
- * Chỉ nhận nội dung văn bản đã trích sẵn. Ảnh và video được ghi nhận tên tệp
- * để hiển thị, nhưng chưa đưa vào ngữ cảnh AI — nói rõ điều này thay vì để
- * người dùng tưởng AI đã học được nội dung ảnh.
+ * Nhận hai dạng: chữ đã trích sẵn (tệp .txt, .csv…), hoặc ảnh gửi kèm dưới
+ * dạng data URL. Ảnh được đọc thành chữ NGAY tại đây rồi lưu vào cùng một cột
+ * extracted_text — từ đó trở đi nó không khác gì một tệp .txt, nên cả bốn AI
+ * dùng được mà không phải sửa gì thêm.
+ *
+ * Video thì chưa: muốn học được cần bóc lời thoại, mà hệ thống chưa có dịch vụ
+ * chuyển giọng nói thành chữ. Nói thẳng là chưa hỗ trợ, không nhận rồi bỏ đi.
  */
 aiRouter.post(
   "/configs/:kind/documents",
@@ -97,8 +355,31 @@ aiRouter.post(
 
     const filename = requireString(body, "filename", "tên tệp");
     const mimeType = typeof body.mimeType === "string" ? body.mimeType : "";
-    const text = typeof body.text === "string" ? body.text : null;
-    const sizeBytes = Number(body.sizeBytes ?? (text ? text.length : 0));
+    const sizeBytes = Number(body.sizeBytes ?? 0);
+    let text = typeof body.text === "string" ? body.text : null;
+
+    const anh = typeof body.imageDataUrl === "string" ? body.imageDataUrl : null;
+    if (anh) {
+      if (!ANH_HOP_LE.test(anh)) {
+        throw new AppError("Chỉ nhận ảnh PNG, JPG, WEBP hoặc GIF.", 400);
+      }
+      if (anh.length > GIOI_HAN_ANH) {
+        throw new AppError(
+          "Ảnh quá lớn. Vui lòng chụp lại với kích thước nhỏ hơn, hoặc cắt bớt phần thừa.",
+          400
+        );
+      }
+
+      const doc = await docChuTuAnh({ dataUrl: anh, filename });
+      if (!doc.text) {
+        throw new AppError(
+          "Không đọc được chữ nào trong ảnh này. Vui lòng chụp rõ hơn, hoặc gõ lại " +
+            "nội dung ra tệp .txt rồi tải lên.",
+          422
+        );
+      }
+      text = doc.text;
+    }
 
     const MAX_TEXT = 200_000;
     if (text && text.length > MAX_TEXT) {
@@ -113,7 +394,7 @@ aiRouter.post(
        VALUES ($1, $2, $3, $4, $5, '', $6)
        RETURNING id, filename, mime_type, size_bytes, created_at,
                  extracted_text IS NOT NULL AS has_text`,
-      [req.user!.id, kind, filename, mimeType, sizeBytes, text]
+      [req.user!.id, kind, filename, mimeType, sizeBytes || (text?.length ?? 0), text]
     );
 
     res.status(201).json({ success: true, data: inserted });
@@ -137,67 +418,61 @@ aiRouter.delete(
 // Sinh nội dung
 // ---------------------------------------------------------------------------
 
-const GOAL_INSTRUCTIONS: Record<string, string> = {
-  sales:
-    "Mục tiêu BÁN HÀNG: nêu bật lợi ích, tạo lý do mua ngay, kết bằng lời kêu gọi hành động rõ ràng.",
-  engagement:
-    "Mục tiêu TĂNG TƯƠNG TÁC: đặt câu hỏi mở hoặc tạo tình huống khiến người đọc muốn bình luận.",
-  announcement:
-    "Mục tiêu THÔNG BÁO: truyền đạt thông tin rõ ràng, ngắn gọn, chuyên nghiệp.",
-};
+/** Phong cách vẽ ảnh chủ shop đang đặt. Đổi lúc nào cũng được. */
+aiRouter.get(
+  "/image-style",
+  route(async (req, res) => {
+    res.json({
+      success: true,
+      data: {
+        phongCach: await docPhongCachDaLuu(req.user!.id),
+        macDinh: PHONG_CACH_MAC_DINH,
+      },
+    });
+  })
+);
+
+/**
+ * AI tạo ảnh minh hoạ cho bài đăng.
+ *
+ * Mỗi lượt tốn tiền thật nên KHÔNG có đường nào gọi ngầm: chỉ chạy khi chủ
+ * shop bấm, hoặc khi bật rõ trong lịch tự đăng.
+ */
+aiRouter.post(
+  "/generate-image",
+  route(async (req, res) => {
+    const noiDung = typeof req.body?.content === "string" ? req.body.content : "";
+    const yeuCau = typeof req.body?.prompt === "string" ? req.body.prompt : undefined;
+    const phongCach = typeof req.body?.style === "string" ? req.body.style : undefined;
+    const anhMau = typeof req.body?.sample === "string" ? req.body.sample : undefined;
+
+    const anh = await taoAnhChoBai({
+      userId: req.user!.id,
+      noiDung,
+      yeuCau,
+      phongCach,
+      anhMau,
+    });
+    // Che địa chỉ kho: trình duyệt chỉ cần vẽ được ảnh, không cần biết kho ở đâu.
+    res.json({ success: true, data: { ...anh, url: anDiaChiKho(anh.url) } });
+  })
+);
 
 aiRouter.post(
   "/generate-post",
   route(async (req, res) => {
     const topic = requireString(req.body, "topic", "chủ đề bài viết");
-    const goal = typeof req.body?.goal === "string" ? req.body.goal : "sales";
-    const count = Math.min(Math.max(Number(req.body?.count ?? 3), 1), 5);
 
-    const config = await queryOne<{ system_prompt: string; tone: string }>(
-      "SELECT system_prompt, tone FROM ai_configs WHERE user_id = $1 AND kind = 'content'",
-      [req.user!.id]
-    );
-
-    const documents = await query<{ filename: string; extracted_text: string | null }>(
-      `SELECT filename, extracted_text FROM ai_documents
-        WHERE user_id = $1 AND kind = 'content' AND extracted_text IS NOT NULL
-        ORDER BY created_at DESC LIMIT 5`,
-      [req.user!.id]
-    );
-
-    const knowledge = documents.rows.length
-      ? "\n\nTHÔNG TIN SẢN PHẨM VÀ VĂN PHONG CỦA SHOP:\n" +
-        documents.rows
-          .map((doc) => `# ${doc.filename}\n${(doc.extracted_text ?? "").slice(0, 3_000)}`)
-          .join("\n\n")
-      : "";
-
-    const systemPrompt = [
-      config?.system_prompt?.trim() ||
-        "Bạn là người viết nội dung mạng xã hội cho shop bán hàng tại Việt Nam.",
-      GOAL_INSTRUCTIONS[goal] ?? GOAL_INSTRUCTIONS.sales,
-      "Viết tiếng Việt tự nhiên, tránh sáo rỗng, không lạm dụng biểu tượng cảm xúc.",
-      knowledge,
-      "",
-      `Trả về JSON: {"options": [${count} chuỗi nội dung khác nhau]}`,
-    ].join("\n");
-
-    const result = await chatJson<string[]>({
-      task: "content",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: `Chủ đề: "${topic}". Viết ${count} phương án.` },
-      ],
-      temperature: 0.8,
-      maxTokens: 2_500,
-      validate: (value) => stringArray(asRecord(value).options),
+    // Viết bài nằm ở services/content-ai.ts để bộ tự động trong worker gọi
+    // được cùng một hàm — worker không có req/res để mượn.
+    const result = await generatePostContent({
+      userId: req.user!.id,
+      topic,
+      goal: typeof req.body?.goal === "string" ? req.body.goal : "sales",
+      count: Number(req.body?.count ?? 3),
     });
 
-    res.json({
-      success: true,
-      options: result.output,
-      usage: result.usage,
-    });
+    res.json({ success: true, options: result.options, usage: result.usage });
   })
 );
 
@@ -303,7 +578,11 @@ aiRouter.post(
       messages: [
         {
           role: "system",
-          content: (config?.system_prompt ?? "Bạn là trợ lý của shop.") + knowledge,
+          content:
+            (config?.system_prompt ?? "Bạn là trợ lý của shop.") +
+            knowledge +
+            "\n\n" +
+            DAN_KHONG_MARKDOWN,
         },
         { role: "user", content: message },
       ],
@@ -313,7 +592,8 @@ aiRouter.post(
 
     res.json({
       success: true,
-      data: { reply: result.output, model: result.model, usage: result.usage },
+      // Gỡ markdown để ô thử hiện ĐÚNG thứ khách sẽ đọc trên Messenger.
+      data: { reply: boMarkdown(result.output), model: result.model, usage: result.usage },
     });
   })
 );

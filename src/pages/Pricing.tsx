@@ -1,7 +1,25 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, ApiError } from '../lib/api';
-import { PRICING_PLANS, PLATFORM_RULES, type PricingPlan } from '../lib/pricing';
+import { PRICING_PLANS, PLATFORM_RULES, goiHienTai, type PricingPlan } from '../lib/pricing';
+
+/** Mã lý do chặn của hàng rào -> câu chủ shop hiểu được. */
+const LY_DO_CHAN: Record<string, string> = {
+  ai_outside_24h: 'Quá 24 giờ kể từ tin cuối của khách — chỉ nhân viên được trả lời',
+  window_expired_7d: 'Quá 7 ngày — nền tảng không cho gửi nữa, kể cả nhân viên',
+  ai_paused: 'AI đang bị tạm dừng để bảo vệ tài khoản',
+  rate_limited: 'Chạm hạn mức tốc độ gửi của nền tảng',
+  ai_hourly_limit: 'Chạm giới hạn số tin AI gửi mỗi giờ do chủ shop đặt',
+  no_account: 'Hội thoại chưa gắn với kênh nào',
+  conversation_not_found: 'Không tìm thấy hội thoại',
+};
+
+/**
+ * Kênh hỗ trợ của mình. Dùng chung một nguồn với nút Trợ giúp ở thanh bên, để
+ * đổi một chỗ là đổi cả hệ thống.
+ */
+const SUPPORT_URL = import.meta.env.VITE_SUPPORT_URL || '/pricing';
+const IS_EXTERNAL_SUPPORT = /^https?:|^mailto:/.test(SUPPORT_URL);
 
 export default function Pricing() {
   const navigate = useNavigate();
@@ -11,6 +29,40 @@ export default function Pricing() {
     connected_accounts: 0, ai_messages_month: 0, tokens_month: 0,
     orders_month: 0, posts_month: 0,
   });
+  const [guardrails, setGuardrails] = useState<Awaited<
+    ReturnType<typeof api.settings.guardrails>
+  >['data'] | null>(null);
+  const [dangMo, setDangMo] = useState<string | null>(null);
+  const [dangLuuHangRao, setDangLuuHangRao] = useState(false);
+
+  /** Siết chặt hàng rào. Máy chủ kẹp lại theo trần chính sách nên không nới được. */
+  const luuHangRao = async (payload: Parameters<typeof api.settings.saveGuardrails>[0]) => {
+    setDangLuuHangRao(true);
+    try {
+      await api.settings.saveGuardrails(payload);
+      const { data } = await api.settings.guardrails();
+      setGuardrails(data);
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không lưu được cài đặt');
+    } finally {
+      setDangLuuHangRao(false);
+    }
+  };
+
+  /** Bật lại AI cho một kênh đang bị hệ thống tự tạm dừng. */
+  const moLaiAi = async (accountId: string) => {
+    setDangMo(accountId);
+    try {
+      await api.settings.resumeAi(accountId);
+      const { data } = await api.settings.guardrails();
+      setGuardrails(data);
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không bật lại được AI');
+    } finally {
+      setDangMo(null);
+    }
+  };
+
   const [safety, setSafety] = useState<{
     status: 'safe' | 'warning' | 'danger';
     sendRatePerMinute: number;
@@ -25,6 +77,10 @@ export default function Pricing() {
   const [errorMessage, setErrorMessage] = useState('');
 
   useEffect(() => {
+    api.settings.guardrails()
+      .then(({ data }) => setGuardrails(data))
+      .catch(() => { /* không chặn màn hình nếu phần này lỗi */ });
+
     Promise.all([api.settings.usage(), api.settings.safety()])
       .then(([u, s]) => {
         setPlan(u.data.plan);
@@ -43,12 +99,28 @@ export default function Pricing() {
     buttonText: p.id === plan ? 'Gói hiện tại' : p.buttonText,
   }));
 
-  const currentPlan = plans.find((p) => p.isCurrent) ?? plans[0];
+  /*
+   * Gói đang dùng lấy đúng theo mã gói trong database. Không được mượn tạm gói
+   * đầu danh sách: shop đang dùng thử từng bị ghi là đang dùng gói Khởi đầu
+   * 390.000 đ/tháng.
+   */
+  const currentPlan = goiHienTai(plan);
   const maxChannels = currentPlan.maxChannels;
   const usedChannels = usage.connected_accounts;
-  const channelPercent = maxChannels > 0
+  const coHanMuc = maxChannels > 0;
+  const channelPercent = coHanMuc
     ? Math.min(100, Math.round((usedChannels / maxChannels) * 100))
     : 0;
+
+  /* Số lượt còn lại phải tính ra, trước đây là chữ cứng "Còn 1 lượt kết nối". */
+  const conLaiKenh = maxChannels - usedChannels;
+  const chuThichKenh = !coHanMuc
+    ? 'Chưa đặt hạn mức trong thời gian dùng thử'
+    : conLaiKenh > 0
+      ? `Còn ${conLaiKenh} lượt kết nối`
+      : conLaiKenh === 0
+        ? 'Đã dùng hết số kênh của gói'
+        : `Đang vượt ${-conLaiKenh} kênh so với gói`;
 
   const safetyStatus = safety?.status ?? 'safe';
   const facebookRules = PLATFORM_RULES;
@@ -60,7 +132,7 @@ export default function Pricing() {
   const handleUpgrade = (planId?: string) => {
     setErrorMessage(
       planId && planId !== plan
-        ? `Đổi sang gói "${plans.find((p) => p.id === planId)?.name}" cần cổng thanh toán, phần này chưa được nối. Hãy liên hệ để được đổi gói thủ công.`
+        ? `Đổi sang gói "${plans.find((p) => p.id === planId)?.name}" cần cổng thanh toán, phần này chưa được nối. Vui lòng liên hệ để được đổi gói thủ công.`
         : 'Cổng thanh toán chưa được nối vào hệ thống.'
     );
   };
@@ -94,13 +166,19 @@ export default function Pricing() {
             <span className="font-label-sm text-on-surface-variant tracking-widest uppercase mb-2 whitespace-nowrap">SỐ KÊNH ĐÃ KẾT NỐI</span>
             <div className="flex items-baseline gap-2 whitespace-nowrap">
               <span className="font-display-lg text-primary">{usedChannels}</span>
-              <span className="font-display-lg text-on-surface-variant">/</span>
-              <span className="font-display-lg text-on-surface-variant">{maxChannels}</span>
+              {coHanMuc && (
+                <>
+                  <span className="font-display-lg text-on-surface-variant">/</span>
+                  <span className="font-display-lg text-on-surface-variant">{maxChannels}</span>
+                </>
+              )}
             </div>
-            <div className="w-full h-2 bg-surface-container rounded-full mt-3 overflow-hidden">
-              <div className="h-full bg-primary shadow-[0_0_10px_rgba(0,229,255,0.8)]" style={{ width: `${channelPercent}%` }}></div>
-            </div>
-            <p className="font-body-md text-on-surface-variant mt-2 whitespace-nowrap">Còn 1 lượt kết nối</p>
+            {coHanMuc && (
+              <div className="w-full h-2 bg-surface-container rounded-full mt-3 overflow-hidden">
+                <div className="h-full bg-primary shadow-[0_0_10px_rgba(0,229,255,0.8)]" style={{ width: `${channelPercent}%` }}></div>
+              </div>
+            )}
+            <p className="font-body-md text-on-surface-variant mt-2">{chuThichKenh}</p>
           </div>
           {/* Right */}
           <div className="flex flex-col gap-sm md:col-span-3 w-full">
@@ -116,6 +194,27 @@ export default function Pricing() {
             <p className="font-body-md text-on-surface font-bold">Bạn chỉ trả tiền theo số kênh kết nối</p>
             <p className="font-body-md text-on-surface-variant">Tin nhắn, bình luận và bài đăng không giới hạn. Một bài viral thu về nghìn bình luận cũng không tốn thêm đồng nào.</p>
           </div>
+        </div>
+
+        {/*
+          HÀNG 2B — mức dùng thật trong tháng.
+
+          Máy chủ vẫn luôn tính mấy con số này nhưng trước đây không hiển thị ở
+          đâu cả. Đặt ngay dưới câu "không giới hạn" để chủ shop thấy bằng số
+          thật là dùng bao nhiêu cũng không phát sinh thêm tiền.
+        */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-md mb-lg">
+          {[
+            { nhan: 'TIN AI ĐÃ TRẢ LỜI', so: usage.ai_messages_month },
+            { nhan: 'ĐƠN CHỐT ĐƯỢC', so: usage.orders_month },
+            { nhan: 'BÀI ĐÃ ĐĂNG', so: usage.posts_month },
+          ].map((o) => (
+            <div key={o.nhan} className="glass-card rounded-xl p-md">
+              <span className="font-label-sm text-on-surface-variant tracking-widest uppercase">{o.nhan}</span>
+              <p className="font-display-lg text-on-surface mt-1">{o.so.toLocaleString('vi-VN')}</p>
+              <p className="font-body-md text-on-surface-variant">trong tháng này, không tính thêm tiền</p>
+            </div>
+          ))}
         </div>
 
         {/* HÀNG 3 — ba thẻ gói nằm ngang, thẻ giữa có viền sáng nổi bật và nhãn góc "ĐANG DÙNG" */}
@@ -162,7 +261,7 @@ export default function Pricing() {
             </div>
           ))}
         </div>
-        <p className="text-center font-body-md text-on-surface-variant mb-xl">Cần nhiều hơn 10 kênh? <a href="#" className="text-primary hover:underline">Liên hệ để có báo giá riêng.</a></p>
+        <p className="text-center font-body-md text-on-surface-variant mb-xl">Cần nhiều hơn 10 kênh? <a href={SUPPORT_URL} {...(IS_EXTERNAL_SUPPORT ? { target: '_blank', rel: 'noreferrer' } : {})} className="text-primary hover:underline">Liên hệ để có báo giá riêng.</a></p>
 
         {/* HÀNG 4 — thẻ lớn "An toàn tài khoản" */}
         <div className="bg-surface-container rounded-xl border border-outline-variant p-md mb-lg">
@@ -207,6 +306,117 @@ export default function Pricing() {
               <span className="material-symbols-outlined text-[14px] mt-0.5">info</span>
               <span>{safety.blockRateNote}</span>
             </p>
+          )}
+
+          {/*
+            KÊNH ĐANG BỊ TẠM DỪNG.
+
+            Trước đây hệ thống tự tắt AI khi tỷ lệ bị chặn cao — đúng, nhưng
+            giao diện KHÔNG hề hiện kênh nào bị tắt, và cũng không có nút bật
+            lại. Chủ shop chỉ thấy một dòng "AI đã tự tạm dừng" rồi bó tay.
+          */}
+          {guardrails && guardrails.pausedAccounts.length > 0 && (
+            <div className="mb-md space-y-2">
+              {guardrails.pausedAccounts.map((kenh) => (
+                <div key={kenh.id} className="bg-[#450a0a]/60 border border-[#ef4444]/40 rounded-lg p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+                  <span className="material-symbols-outlined text-[#ef4444] text-[22px] shrink-0">pause_circle</span>
+                  <div className="flex-1">
+                    <p className="font-body-md text-on-surface font-bold">{kenh.display_name}</p>
+                    <p className="text-sm text-on-surface-variant mt-0.5">{kenh.ai_pause_reason}</p>
+                    <p className="text-xs text-on-surface-variant/70 mt-1">
+                      Tự mở lại lúc {new Date(kenh.ai_paused_until).toLocaleString('vi-VN')}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => moLaiAi(kenh.id)}
+                    disabled={dangMo === kenh.id}
+                    className="shrink-0 px-4 py-2 bg-primary text-on-primary font-bold text-sm rounded-lg hover:brightness-110 transition-all disabled:opacity-60"
+                  >
+                    {dangMo === kenh.id ? 'Đang mở…' : 'Bật lại AI ngay'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Vì sao tin bị chặn — để chủ shop biết đường xử lý, không đoán mò. */}
+          {guardrails && guardrails.blockedReasons.length > 0 && (
+            <div className="mb-md bg-surface-container-high rounded-xl border border-outline-variant p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="font-body-md font-bold text-on-surface">Tin bị chặn trong 7 ngày qua</h4>
+                <span className="font-label-sm text-on-surface-variant">
+                  {guardrails.usage.blockedLastDay} tin trong 24 giờ
+                </span>
+              </div>
+              <div className="space-y-2">
+                {guardrails.blockedReasons.map((r) => (
+                  <div key={r.block_reason} className="flex items-start justify-between gap-4 text-sm">
+                    <span className="text-on-surface-variant leading-relaxed">
+                      {LY_DO_CHAN[r.block_reason] ?? r.block_reason}
+                    </span>
+                    <span className="font-bold text-on-surface shrink-0">{r.n}</span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-on-surface-variant/70 mt-3 pt-3 border-t border-outline-variant/50">
+                Bị chặn là hệ thống đang bảo vệ Trang của bạn khỏi vi phạm chính sách,
+                không phải lỗi. Hạn mức đang áp dụng: {guardrails.rateLimit.perMinute} tin/phút
+                {guardrails.rateLimit.source === 'live' ? ' (đọc trực tiếp từ nền tảng)' : ''}.
+              </p>
+            </div>
+          )}
+
+          {/* Giới hạn đang áp dụng — sửa được phần tuỳ chọn, không sửa được trần chính sách */}
+          {guardrails && (
+            <div className="mb-md bg-surface-container-high rounded-xl border border-outline-variant p-4">
+              <h4 className="font-body-md font-bold text-on-surface mb-1">Giới hạn đang áp dụng</h4>
+              <p className="text-xs text-on-surface-variant/70 mb-4 leading-relaxed">
+                Trần tốc độ là quy định của nền tảng, hệ thống không cho vượt. Bạn chỉ
+                có thể đặt chặt hơn nếu muốn thận trọng.
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="bg-surface-container rounded-lg border border-outline-variant p-3">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-sm font-bold text-on-surface">Trần của nền tảng</span>
+                    <span className="material-symbols-outlined text-[16px] text-on-surface-variant" title="Không sửa được">lock</span>
+                  </div>
+                  <p className="font-headline-sm text-xl font-bold text-primary">
+                    {guardrails.rateLimit.perMinute} tin/phút
+                  </p>
+                  <p className="text-xs text-on-surface-variant mt-1">
+                    {guardrails.rateLimit.source === 'live'
+                      ? 'Đọc trực tiếp từ nền tảng'
+                      : 'Theo bậc tài khoản hiện tại'}
+                  </p>
+                </div>
+
+                <div className="bg-surface-container rounded-lg border border-outline-variant p-3">
+                  <label className="text-sm font-bold text-on-surface block mb-1">
+                    Giới hạn tin AI mỗi giờ
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number" min={0}
+                      defaultValue={Number(guardrails.config.max_ai_sends_per_hour ?? 0)}
+                      onBlur={(e) => {
+                        const v = Number(e.target.value);
+                        if (Number.isFinite(v) && v !== Number(guardrails.config.max_ai_sends_per_hour ?? 0)) {
+                          luuHangRao({ maxAiSendsPerHour: v });
+                        }
+                      }}
+                      disabled={dangLuuHangRao}
+                      className="w-24 bg-surface-container-high border border-outline-variant rounded-lg px-2 py-1.5 text-sm text-on-surface focus:border-primary focus:outline-none disabled:opacity-60"
+                    />
+                    <span className="text-xs text-on-surface-variant">0 = không giới hạn</span>
+                  </div>
+                  <p className="text-xs text-on-surface-variant/70 mt-2 leading-relaxed">
+                    Đây KHÔNG phải quy định nền tảng, chỉ là chốt an toàn của riêng bạn
+                    để AI không phát tán hàng loạt khi có sự cố.
+                  </p>
+                </div>
+              </div>
+            </div>
           )}
 
           {/* Metrics */}
@@ -265,7 +475,7 @@ export default function Pricing() {
         <div className="bg-surface-container rounded-xl border border-outline-variant p-md mb-xl">
           <div className="mb-md">
             <h3 className="font-headline-lg text-on-surface mb-2">Quy định bắt buộc của Facebook</h3>
-            <p className="font-body-md text-on-surface-variant">Những giới hạn này do Facebook đặt ra, không phải do phần mềm. Chúng tôi khóa cứng để bảo vệ tài khoản của bạn.</p>
+            <p className="font-body-md text-on-surface-variant">Những giới hạn này do Facebook đặt ra, không phải do phần mềm. Chúng tôi áp dụng cố định để bảo vệ tài khoản của bạn.</p>
           </div>
 
           <div className="flex flex-col gap-4">

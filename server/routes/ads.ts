@@ -4,6 +4,8 @@ import { requireAuth } from "../auth.js";
 import { AppError, requireString, route } from "../http.js";
 import * as ads from "../services/ads.js";
 import { chatJson, asRecord, optionalString } from "../services/ai.js";
+import { loadKnowledge } from "../services/knowledge.js";
+import { boMarkdown, DAN_KHONG_MARKDOWN } from "../services/text.js";
 
 export const adsRouter = Router();
 
@@ -117,9 +119,9 @@ adsRouter.get(
   "/boostable-posts",
   route(async (req, res) => {
     const rows = await query(
-      `SELECT id, content, zernio_post_id, published_at, stats, platform_urls
+      `SELECT id, content, platform_post_ref, published_at, stats, platform_urls
          FROM posts
-        WHERE user_id = $1 AND status = 'published' AND zernio_post_id IS NOT NULL
+        WHERE user_id = $1 AND status = 'published' AND platform_post_ref IS NOT NULL
         ORDER BY published_at DESC LIMIT 50`,
       [req.user!.id]
     );
@@ -149,6 +151,102 @@ adsRouter.post(
       status: status as "ACTIVE" | "PAUSED" | "ARCHIVED",
     });
 
+    res.json({ success: true, data: result });
+  })
+);
+
+/**
+ * Sửa ngân sách chiến dịch ngay trong app.
+ *
+ * Trước đây nút này mở Trình quản lý quảng cáo của Facebook. Mình trả tiền cho
+ * Zernio đúng để khỏi phải đẩy chủ shop sang đó.
+ */
+adsRouter.patch(
+  "/campaigns/:id/budget",
+  route(async (req, res) => {
+    const body = req.body ?? {};
+
+    const amount = Number(body.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new AppError("Ngân sách phải là một số lớn hơn 0");
+    }
+
+    const budgetType = body.budgetType === "lifetime" ? "lifetime" : "daily";
+    const platform = typeof body.platform === "string" ? body.platform : "facebook";
+
+    const resolved = await resolveAdAccount(req.user!.id);
+    if (!resolved) throw new AppError("Chưa kết nối tài khoản quảng cáo", 409);
+
+    try {
+      const result = await ads.updateCampaignBudget({
+        campaignId: req.params.id,
+        platform,
+        amount,
+        budgetType,
+        accountId: resolved.accountId,
+      });
+      res.json({ success: true, data: result });
+    } catch (error) {
+      /*
+       * 409 nghĩa là chiến dịch đặt ngân sách ở tầng nhóm quảng cáo (ABO), nên
+       * lệnh sửa ở tầng chiến dịch bị từ chối. Đây là cấu hình hợp lệ của Meta,
+       * không phải hỏng — nói rõ ra thay vì ném lỗi kỹ thuật vào mặt chủ shop.
+       */
+      const status = (error as { status?: number })?.status;
+      if (status === 409) {
+        throw new AppError(
+          "Chiến dịch này đặt ngân sách ở từng nhóm quảng cáo, không đặt chung " +
+            "ở cấp chiến dịch. Vui lòng mở chiến dịch và sửa ngân sách của nhóm bên trong.",
+          409
+        );
+      }
+      throw error;
+    }
+  })
+);
+
+adsRouter.patch(
+  "/ad-sets/:id/budget",
+  route(async (req, res) => {
+    const body = req.body ?? {};
+
+    const amount = Number(body.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new AppError("Ngân sách phải là một số lớn hơn 0");
+    }
+
+    /*
+     * Đối chiếu chủ sở hữu TRƯỚC khi đổi ngân sách.
+     *
+     * Đây là route duy nhất trong phần quảng cáo không ràng buộc gì theo shop:
+     * nó nhận thẳng adSetId từ đường dẫn rồi gửi cho Zernio. Mà bản PUT của
+     * Zernio không nhận accountId, còn khoá API thì dùng chung cho cả nền tảng
+     * — nghĩa là không có gì ngăn shop A đổi ngân sách của shop B.
+     *
+     * Bản GET thì CÓ nhận accountId, nên đọc trước bằng tài khoản của shop
+     * đang đăng nhập: đọc được thì đúng là của họ, không đọc được thì thôi.
+     */
+    const resolved = await resolveAdAccount(req.user!.id);
+    if (!resolved) throw new AppError("Chưa kết nối tài khoản quảng cáo", 409);
+
+    let adSet: Record<string, unknown>;
+    try {
+      adSet = await ads.getAdSet({ adSetId: req.params.id, accountId: resolved.accountId });
+    } catch {
+      throw new AppError("Không tìm thấy nhóm quảng cáo này trong tài khoản của bạn", 404);
+    }
+
+    const result = await ads.updateAdSetBudget({
+      adSetId: req.params.id,
+      amount,
+      budgetType: body.budgetType === "lifetime" ? "lifetime" : "daily",
+      platform:
+        typeof body.platform === "string"
+          ? body.platform
+          : typeof adSet.platform === "string"
+            ? adSet.platform
+            : "facebook",
+    });
     res.json({ success: true, data: result });
   })
 );
@@ -199,12 +297,12 @@ adsRouter.post(
       throw new AppError("Số ngày chạy phải từ 1 trở lên");
     }
 
-    const post = await queryOne<{ zernio_post_id: string | null }>(
-      "SELECT zernio_post_id FROM posts WHERE id = $1 AND user_id = $2",
+    const post = await queryOne<{ platform_post_ref: string | null }>(
+      "SELECT platform_post_ref FROM posts WHERE id = $1 AND user_id = $2",
       [postId, req.user!.id]
     );
     if (!post) throw new AppError("Không tìm thấy bài viết", 404);
-    if (!post.zernio_post_id) {
+    if (!post.platform_post_ref) {
       throw new AppError("Bài này chưa được đăng nên chưa thể quảng cáo", 409);
     }
 
@@ -223,7 +321,7 @@ adsRouter.post(
     const result = await ads.boostPost({
       accountId: resolved.accountId,
       adAccountId: resolved.adAccountId,
-      postId: post.zernio_post_id,
+      postId: post.platform_post_ref,
       dailyBudget,
       durationDays,
       objective: typeof body.objective === "string" ? body.objective : undefined,
@@ -253,6 +351,34 @@ adsRouter.post(
     });
 
     res.status(201).json({ success: true, data: result });
+  })
+);
+
+adsRouter.put(
+  "/audiences/:id",
+  route(async (req, res) => {
+    const resolved = await resolveAdAccount(req.user!.id);
+    if (!resolved) throw new AppError("Chưa kết nối tài khoản quảng cáo", 409);
+
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : undefined;
+    const description =
+      typeof req.body?.description === "string" ? req.body.description.trim() : undefined;
+
+    if (name === undefined && description === undefined) {
+      throw new AppError("Không có thông tin nào để sửa.", 400);
+    }
+    if (name !== undefined && name === "") {
+      throw new AppError("Tên tệp đối tượng không được để trống.", 400);
+    }
+
+    const result = await ads.updateAudience({
+      accountId: resolved.accountId,
+      audienceId: req.params.id,
+      name,
+      description,
+    });
+
+    res.json({ success: true, data: result });
   })
 );
 
@@ -306,7 +432,7 @@ adsRouter.post(
           findings:
             "Tài khoản quảng cáo đã kết nối nhưng chưa có chiến dịch nào đang chạy.",
           recommendation:
-            "Hãy chọn một bài đã đăng có tương tác tốt và bấm quảng cáo cho bài đó. " +
+            "Vui lòng chọn một bài đã đăng có tương tác tốt và bấm quảng cáo cho bài đó. " +
             "AI sẽ phân tích hiệu quả ngay khi có số liệu chi tiêu đầu tiên.",
           actions: [],
         },
@@ -319,6 +445,9 @@ adsRouter.post(
       [req.user!.id]
     );
 
+    // Tài liệu chủ shop đã dạy riêng cho AI quảng cáo.
+    const knowledge = await loadKnowledge(req.user!.id, "ads");
+
     const result = await chatJson({
       task: "ads",
       messages: [
@@ -327,8 +456,10 @@ adsRouter.post(
           content:
             (config?.system_prompt ??
               "Bạn là chuyên gia quảng cáo Facebook, phân tích bằng tiếng Việt.") +
+            knowledge +
             "\n\nChỉ dựa vào số liệu được cung cấp, tuyệt đối không bịa số. " +
-            'Trả JSON: {"findings": string, "recommendation": string, "actions": string[]}',
+            DAN_KHONG_MARKDOWN +
+            ' Trả JSON: {"findings": string, "recommendation": string, "actions": string[]}',
         },
         {
           role: "user",
@@ -342,10 +473,12 @@ adsRouter.post(
         const object = asRecord(value);
         return {
           hasData: true,
-          findings: optionalString(object.findings) ?? "Chưa đủ dữ liệu để kết luận.",
-          recommendation: optionalString(object.recommendation) ?? "",
+          findings: boMarkdown(optionalString(object.findings) ?? "Chưa đủ dữ liệu để kết luận."),
+          recommendation: boMarkdown(optionalString(object.recommendation) ?? ""),
           actions: Array.isArray(object.actions)
-            ? object.actions.filter((a): a is string => typeof a === "string")
+            ? object.actions
+                .filter((a): a is string => typeof a === "string")
+                .map(boMarkdown)
             : [],
         };
       },

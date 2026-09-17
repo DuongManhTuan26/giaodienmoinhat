@@ -133,8 +133,8 @@ export default function Analytics() {
               onClick={() => setIsTrainingOpen(true)}
               className="px-4 py-2 bg-surface-container text-primary border border-primary/30 font-bold rounded-lg hover:bg-primary/10 transition-colors flex items-center gap-2"
             >
-              <span className="material-symbols-outlined text-[18px]">model_training</span>
-              Huấn luyện AI
+              <span className="material-symbols-outlined text-[18px]">badge</span>
+              Vai trò AI
             </button>
             <select 
               value={timeRange}
@@ -182,7 +182,7 @@ export default function Analytics() {
                     <span className="material-symbols-outlined text-primary animate-spin">sync</span>
                     <span className="text-sm text-primary font-medium">Đang xử lý dữ liệu và tạo báo cáo...</span>
                   </div>
-                  <div className="w-full max-w-md h-1.5 bg-surface-container-highest rounded-full overflow-hidden">
+                  <div className="w-full max-w-[420px] h-1.5 bg-surface-container-highest rounded-full overflow-hidden">
                     <div className="h-full bg-primary w-2/3 animate-pulse"></div>
                   </div>
                 </div>
@@ -326,7 +326,7 @@ export default function Analytics() {
 
       </div>
       
-      <AITrainingModal isOpen={isTrainingOpen} onClose={() => setIsTrainingOpen(false)} aiName="AI Thống Kê - Phân Tích" />
+      <AITrainingModal kind="analytics" isOpen={isTrainingOpen} onClose={() => setIsTrainingOpen(false)} aiName="AI Thống Kê - Phân Tích" />
     </main>
   );
 }

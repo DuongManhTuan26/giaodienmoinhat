@@ -9,6 +9,20 @@ export default function Connections() {
   const [connectStep, setConnectStep] = useState(0); // 0 = đóng, 1-4 = các bước
   const [selectedPlatform, setSelectedPlatform] = useState<Platform | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  /*
+   * Nhịp hỏi máy chủ trong lúc chờ cấp quyền. Giữ trong ref chứ không trong
+   * state: phải dừng được cả khi người dùng rời trang giữa chừng, nếu không nó
+   * chạy ngầm mãi và tiếp tục đốt hạn mức gọi Zernio.
+   */
+  const oauthTimer = useRef<number | null>(null);
+  const accountsBeforeOAuth = useRef(0);
+  /**
+   * Trang lấy từ Facebook, CHƯA kết nối — khách chọn cái nào thì mới tạo kênh.
+   * Khác hẳn `accounts` vốn là các kênh đã kết nối rồi.
+   */
+  const [pagesToSelect, setPagesToSelect] = useState<
+    Array<{ id: string; name: string; username: string | null; category: string | null }>
+  >([]);
   const [loginSuccess, setLoginSuccess] = useState(false);
   const [selectedPages, setSelectedPages] = useState<string[]>([]);
 
@@ -16,8 +30,16 @@ export default function Connections() {
     social: [], ads: [], communication: [],
   });
   const [accounts, setAccounts] = useState<SocialAccount[]>([]);
+  /** Tài khoản vừa nối xong của đúng nền tảng đang chọn. */
+  const justConnected = selectedPlatform
+    ? accounts.find((a) => a.platform === selectedPlatform.platformKey && a.connected)
+    : undefined;
+  const justConnectedName =
+    justConnected?.display_name || justConnected?.username || 'tài khoản của bạn';
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState('');
+  /** Lần tải gần nhất có thất bại không. Dùng để không khoe "mọi thứ tốt" khi chưa có dữ liệu. */
+  const [taiThatBai, setTaiThatBai] = useState(false);
   const [syncing, setSyncing] = useState(false);
 
   const load = useCallback(async () => {
@@ -28,7 +50,10 @@ export default function Connections() {
       ]);
       setCatalog(platforms.data);
       setAccounts(accountList.data);
+      setTaiThatBai(false);
+      setErrorMessage('');
     } catch (error) {
+      setTaiThatBai(true);
       setErrorMessage(error instanceof ApiError ? error.message : 'Không tải được danh sách kênh');
     } finally {
       setLoading(false);
@@ -101,7 +126,7 @@ export default function Connections() {
   }
 
   const liveConnectedAccounts = Object.entries(accountsByPlatform).map(([platform, list]) => {
-    const channel = allPlatforms.find((c) => c.zernioPlatform === platform)
+    const channel = allPlatforms.find((c) => c.platformKey === platform)
       ?? allPlatforms.find((c) => c.id === 'fb_ads' && platform === 'metaads');
     return {
       id: platform + '_acc',
@@ -137,18 +162,39 @@ export default function Connections() {
   const liveAdChannels = catalog.ads;
   const liveCommChannels = catalog.communication;
 
-  /** Trang thuộc nền tảng đang kết nối, dùng cho bước chọn trang. */
-  const newlyConnectedPages = (selectedPlatform?.zernioPlatform
-    ? accounts.filter((a) => a.platform === selectedPlatform.zernioPlatform)
-    : []
-  ).map((a) => ({
-    id: a.id,
-    name: a.display_name || a.username,
-    avatar: a.profile_picture
-      ?? 'https://ui-avatars.com/api/?name=' + encodeURIComponent(a.display_name || a.username) + '&background=random',
-    followers: a.followers_count != null ? a.followers_count.toLocaleString('vi-VN') : '—',
-    connected: a.connected,
-  }));
+  /**
+   * Danh sách cho bước chọn Trang.
+   *
+   * Sau khi cấp quyền, đây là các Trang Facebook trả về mà khách CHƯA kết nối —
+   * chọn xong mới tạo kênh. Facebook chỉ trả id/tên/hạng mục ở bước này, chưa
+   * có ảnh đại diện hay số người theo dõi, nên hai ô đó để trống thay vì bịa số.
+   *
+   * Khi không có phiên chọn nào đang chờ thì quay về hiển thị các kênh đã nối,
+   * để màn hình vẫn dùng được cho việc xem lại.
+   */
+  const newlyConnectedPages = pagesToSelect.length > 0
+    ? pagesToSelect.map((p) => ({
+        id: p.id,
+        name: p.name,
+        avatar: 'https://ui-avatars.com/api/?name=' + encodeURIComponent(p.name) + '&background=random',
+        // Facebook chưa trả số người theo dõi ở bước này, nên hiện hạng mục
+        // Trang — thông tin thật và đủ để khách nhận ra đúng Trang của mình.
+        subtitle: p.category ?? 'Trang Facebook',
+        connected: accounts.some((a) => a.connected && a.display_name === p.name),
+      }))
+    : (selectedPlatform?.platformKey
+        ? accounts.filter((a) => a.platform === selectedPlatform.platformKey)
+        : []
+      ).map((a) => ({
+        id: a.id,
+        name: a.display_name || a.username,
+        avatar: a.profile_picture
+          ?? 'https://ui-avatars.com/api/?name=' + encodeURIComponent(a.display_name || a.username) + '&background=random',
+        subtitle: a.followers_count != null
+          ? `${a.followers_count.toLocaleString('vi-VN')} người theo dõi`
+          : 'Trang Facebook',
+        connected: a.connected,
+      }));
 
   /**
    * Mã truy cập chỉ dùng cho luồng nhập mã. Sau khi xác minh, mọi kênh Zernio
@@ -174,9 +220,15 @@ export default function Connections() {
   /**
    * Mở luồng cấp quyền THẬT của nền tảng.
    *
-   * Zernio trả về URL đăng nhập chính chủ (Facebook, Instagram...). Người dùng
-   * cấp quyền ở cửa sổ đó, Zernio nhận callback. Phía mình không nhận được tín
-   * hiệu trực tiếp nên sau khi cửa sổ đóng thì đồng bộ lại để biết kết quả.
+   * Chuyển thẳng trang, KHÔNG mở cửa sổ con.
+   *
+   * Bản trước dùng window.open. Chủ shop báo "không thấy cửa sổ nào hiện ra":
+   * trình duyệt chặn im lặng và vẫn trả về một đối tượng, nên mã tưởng đã mở
+   * rồi ngồi chờ một cửa sổ không tồn tại — màn hình quay vô tận.
+   *
+   * Chuyển thẳng trang thì không có gì để chặn. Cấp quyền xong Zernio đưa
+   * trình duyệt về /connections?connect=select, và màn hình này tự mở lại đúng
+   * bước chọn Trang nhờ dữ liệu đã cất ở máy chủ.
    */
   const handleStartOAuth = async () => {
     if (!selectedPlatform) return;
@@ -189,46 +241,155 @@ export default function Connections() {
     setErrorMessage('');
 
     try {
-      const { url } = await api.connections.connectUrl(selectedPlatform.zernioPlatform!);
-      const popup = window.open(url, 'zernio_oauth', 'width=680,height=760');
-      if (!popup) {
-        setIsLoggingIn(false);
-        setErrorMessage('Trình duyệt đã chặn cửa sổ bật lên. Hãy cho phép rồi thử lại.');
-        return;
-      }
-
-      const before = accounts.length;
-      const timer = window.setInterval(async () => {
-        if (!popup.closed) return;
-        window.clearInterval(timer);
-
-        try {
-          const result = await api.connections.sync();
-          setAccounts(result.data);
-          await load();
-          await reloadActivePages();
-
-          if (result.data.length > before) {
-            setLoginSuccess(true);
-            setTimeout(() => {
-              setConnectStep(selectedPlatform.connectionType === 'oauth_with_selection' ? 3 : 4);
-            }, 800);
-          } else {
-            setErrorMessage(
-              'Chưa thấy tài khoản mới nào. Có thể bạn đã đóng cửa sổ trước khi cấp quyền xong.'
-            );
-          }
-        } catch (error) {
-          setErrorMessage(error instanceof ApiError ? error.message : 'Không xác nhận được kết nối');
-        } finally {
-          setIsLoggingIn(false);
-        }
-      }, 1000);
+      const { url } = await api.connections.connectUrl(selectedPlatform.platformKey!);
+      window.location.href = url;
     } catch (error) {
       setIsLoggingIn(false);
       setErrorMessage(error instanceof ApiError ? error.message : 'Không lấy được liên kết cấp quyền');
     }
   };
+
+  /**
+   * Một lần kiểm tra: đã cấp quyền xong chưa?
+   *
+   * Hỏi bảng tạm của chính mình, không gọi Zernio — nên dò dày cũng không đụng
+   * vào hạn mức 60 lượt/phút dùng chung với bot trả lời khách. Chỉ khi thật sự
+   * có phiên đang chờ thì máy chủ mới hỏi Facebook một lần để lấy danh sách.
+   */
+  const checkForPendingSelection = async (): Promise<boolean> => {
+    const { data } = await api.connections.pendingSelection();
+    if (data.waiting || data.pages.length === 0) return false;
+
+    // Dựng lại nền tảng đang kết nối. Thiếu bước này thì khối bước 3 không có
+    // gì để vẽ và hộp thoại hiện ra trắng trơn.
+    const channel = [...catalog.social, ...catalog.ads, ...catalog.communication]
+      .find((c) => c.platformKey === data.platform);
+    if (channel) setSelectedPlatform(channel);
+
+    setPagesToSelect(data.pages);
+    setSelectedPages([]);
+    setLoginSuccess(true);
+    setConnectStep(3);
+    return true;
+  };
+
+  /** Khách tự bấm khi đã cấp quyền xong, không phải ngồi chờ hết nhịp. */
+  const handleCheckNow = async () => {
+    setErrorMessage('');
+    try {
+      const found = await checkForPendingSelection();
+      if (found) {
+        setIsLoggingIn(false);
+      } else {
+        setErrorMessage(
+          'Chưa nhận được kết quả cấp quyền. Vui lòng kiểm tra lại xem bạn đã cấp quyền cho ' +
+            'Trang trong cửa sổ Facebook, rồi bấm kiểm tra lại.'
+        );
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không kiểm tra được');
+    }
+  };
+
+  /**
+   * Chốt các Trang khách đã chọn — bước thật sự tạo kênh trên Zernio.
+   */
+  const handleConfirmPages = async () => {
+    if (selectedPages.length === 0) return;
+    setIsLoggingIn(true);
+    setErrorMessage('');
+    try {
+      const { data } = await api.connections.selectPages(selectedPages);
+      // Kéo kênh vừa tạo về database của mình rồi mới sang bước cuối.
+      const result = await api.connections.sync();
+      setAccounts(result.data);
+      await load();
+      await reloadActivePages();
+      setPagesToSelect([]);
+
+      if (data.failed.length > 0) {
+        setErrorMessage(
+          `Có ${data.failed.length} Trang không kết nối được: ${data.failed[0].error}`
+        );
+      }
+      setConnectStep(4);
+    } catch (error) {
+      setErrorMessage(error instanceof ApiError ? error.message : 'Không kết nối được Trang đã chọn');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  /*
+   * Ghi nhận việc vừa quay về từ Facebook.
+   *
+   * Chỉ ĐỌC tín hiệu rồi cất vào state, chưa xử lý gì. Lý do: lúc này danh mục
+   * kênh chưa tải xong, mà bước chọn Trang cần biết đang kết nối nền tảng nào
+   * mới vẽ được. Bản trước xử lý luôn tại đây nên dựng lại nền tảng thất bại và
+   * hộp thoại hiện ra RỖNG — đúng thứ chủ shop gặp.
+   */
+  const [vuaQuayVe, setVuaQuayVe] = useState<string | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const ket_qua = params.get('connect');
+    if (!ket_qua) return;
+
+    window.history.replaceState({}, '', '/connections');
+
+    if (ket_qua === 'error') {
+      setErrorMessage(params.get('message') ?? 'Cấp quyền chưa hoàn tất. Vui lòng thử lại.');
+      return;
+    }
+    setVuaQuayVe(ket_qua);
+  }, []);
+
+  /*
+   * Xử lý thật, chỉ chạy khi danh mục kênh đã có.
+   */
+  useEffect(() => {
+    if (vuaQuayVe !== 'select') return;
+    const daTaiDanhMuc = catalog.social.length > 0;
+    if (!daTaiDanhMuc) return;
+
+    setVuaQuayVe(null);
+
+    (async () => {
+      try {
+        const { data } = await api.connections.pendingSelection();
+
+        // Không cần chọn gì thêm: kênh đã được tạo, chỉ việc kéo về.
+        if (data.waiting || data.pages.length === 0) {
+          const result = await api.connections.sync();
+          setAccounts(result.data);
+          await load();
+          await reloadActivePages();
+          return;
+        }
+
+        const channel = [...catalog.social, ...catalog.ads, ...catalog.communication]
+          .find((c) => c.platformKey === data.platform);
+
+        if (!channel) {
+          setErrorMessage(
+            `Đã cấp quyền xong nhưng hệ thống chưa nhận ra nền tảng "${data.platform}".`
+          );
+          return;
+        }
+
+        setSelectedPlatform(channel);
+        setPagesToSelect(data.pages);
+        setSelectedPages([]);
+        setLoginSuccess(true);
+        setConnectStep(3);
+      } catch (error) {
+        setErrorMessage(
+          error instanceof ApiError ? error.message : 'Không lấy được danh sách Trang'
+        );
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vuaQuayVe, catalog]);
 
   const handleFinishConnection = async () => {
     await load();
@@ -258,9 +419,40 @@ export default function Connections() {
     }
   };
 
+  /**
+   * Băng thông báo lỗi.
+   *
+   * Trước đây màn hình này có 20 chỗ đặt thông báo lỗi và KHÔNG chỗ nào hiển
+   * thị. Mọi thất bại đều bị nuốt im lặng: khách bấm, không có gì xảy ra, cũng
+   * không biết vì sao. Đó là lý do lỗi kết nối trông giống như treo máy.
+   */
+  const errorBanner = errorMessage ? (
+    <div className="flex items-start gap-3 text-sm text-error bg-error/10 border border-error/30 rounded-xl px-4 py-3">
+      <span className="material-symbols-outlined text-[18px] shrink-0 mt-0.5">error</span>
+      <span className="flex-1 leading-relaxed">{errorMessage}</span>
+      {taiThatBai && (
+        <button
+          onClick={() => { setLoading(true); load(); }}
+          className="shrink-0 px-3 py-1 rounded-lg border border-error/40 font-bold hover:bg-error/10 transition-colors"
+        >
+          Thử lại
+        </button>
+      )}
+      <button
+        onClick={() => setErrorMessage('')}
+        className="shrink-0 opacity-60 hover:opacity-100 transition-opacity"
+        title="Đóng"
+      >
+        <span className="material-symbols-outlined text-[18px]">close</span>
+      </button>
+    </div>
+  ) : null;
+
   return (
     <main className="flex-1   p-8 bg-background relative  ">
-      
+
+      {errorBanner && <div className="mb-6">{errorBanner}</div>}
+
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-8">
         <div>
@@ -285,7 +477,7 @@ export default function Connections() {
 
       {/* Row 1: Status Banners */}
       <div className="mb-8">
-        {bannerState === 'normal' && (
+        {bannerState === 'normal' && !taiThatBai && (
           <div className="bg-surface-container/30 border border-primary/30 shadow-[0_0_20px_rgba(0,229,255,0.05)] rounded-2xl p-5 flex items-center gap-4 relative overflow-hidden">
             <div className="absolute top-0 right-0 w-64 h-64 bg-primary/5 blur-[80px] -z-10 rounded-full"></div>
             <div className="w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center shrink-0 border border-primary/20">
@@ -636,7 +828,7 @@ export default function Connections() {
             {/* Footer Buttons */}
             <div className="mt-auto flex gap-3">
               <button 
-                onClick={() => handleOpenConnect(allPlatforms.find((c) => c.zernioPlatform === account.platformId) ?? null!)}
+                onClick={() => handleOpenConnect(allPlatforms.find((c) => c.platformKey === account.platformId) ?? null!)}
                 className="flex-1 py-2.5 px-4 bg-surface-container border border-outline-variant text-on-surface font-bold rounded-xl hover:bg-surface-variant transition-colors">
                 Thêm trang từ tài khoản này
               </button>
@@ -667,6 +859,8 @@ export default function Connections() {
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300" onClick={() => setConnectStep(0)}></div>
           <div className={clsx("bg-surface-container-high border border-primary/30 rounded-2xl shadow-[0_0_40px_rgba(0,229,255,0.1)] relative z-10 animate-in zoom-in-95 duration-300 flex flex-col overflow-hidden transition-all max-h-[90vh]", connectStep === 1 ? "w-full max-w-4xl" : "w-full max-w-[560px]")}>
             
+            {errorBanner && <div className="px-6 pt-6">{errorBanner}</div>}
+
             <div className="flex items-center justify-between p-6 border-b border-outline-variant/50 shrink-0">
               <div className="flex gap-2">
                 {connectStep === 1 ? (
@@ -696,6 +890,29 @@ export default function Connections() {
             </div>
 
             <div className={clsx("p-6 md:p-8 flex-1 overflow-y-auto custom-scrollbar", connectStep === 1 ? "max-h-[70vh]" : "")}>
+              {/*
+                Lưới an toàn: từ bước 2 trở đi mọi nhánh đều cần selectedPlatform.
+                Thiếu nó thì trước đây hộp thoại hiện ra TRẮNG TRƠN, không chữ
+                không nút — chủ shop không biết đang xảy ra chuyện gì. Thà nói
+                thẳng là chưa dựng lại được và cho đường quay lại.
+              */}
+              {connectStep > 1 && !selectedPlatform && (
+                <div className="text-center py-8">
+                  <span className="material-symbols-outlined text-[40px] text-on-surface-variant opacity-40">help</span>
+                  <h2 className="text-xl font-bold text-on-surface mt-4 mb-2">Chưa dựng lại được bước đang dở</h2>
+                  <p className="text-sm text-on-surface-variant mb-6 max-w-[380px] mx-auto leading-relaxed">
+                    Phiên cấp quyền vẫn còn hiệu lực. Vui lòng bấm nút bên dưới để mở lại
+                    danh sách Trang cần chọn.
+                  </p>
+                  <button
+                    onClick={handleCheckNow}
+                    className="py-3 px-8 bg-primary text-on-primary font-bold rounded-xl shadow-[0_4px_15px_rgba(0,229,255,0.4)] hover:scale-105 transition-transform"
+                  >
+                    Mở lại danh sách Trang
+                  </button>
+                </div>
+              )}
+
               {connectStep === 1 && (
                 <>
                   <h2 className="text-2xl font-bold text-on-surface mb-6">Bạn muốn kết nối nền tảng nào?</h2>
@@ -946,7 +1163,7 @@ export default function Connections() {
                     <h3 className="font-mono text-[11px] font-bold tracking-wider text-on-surface-variant uppercase mb-4">CÁC QUYỀN SẼ ĐƯỢC XIN</h3>
                     <div className="space-y-4">
                       {(selectedPlatform.requestedPermissions || [
-                        { icon: 'api', name: `Truy cập API ${selectedPlatform.name}`, desc: 'Cho phép Zernio kết nối và trao đổi dữ liệu với tài khoản của bạn.' },
+                        { icon: 'api', name: `Truy cập API ${selectedPlatform.name}`, desc: 'Cho phép hệ thống kết nối và trao đổi dữ liệu với tài khoản của bạn.' },
                         { icon: 'manage_accounts', name: 'Quản lý tài nguyên', desc: 'Đọc thông tin, danh sách trang và thiết lập để AI có thể hoạt động.' }
                       ]).map((perm: any, idx: number) => (
                         <div key={idx} className="flex gap-3">
@@ -961,16 +1178,21 @@ export default function Connections() {
                   </div>
 
                   <div className="mt-8">
+                    {/*
+                      Lúc đang chờ, nút này KHÔNG bị khoá. Bản trước khoá nút và
+                      quay mãi: cấp quyền xong rồi mà màn hình vẫn quay, bấm gì
+                      cũng không được, không có đường thoát nào ngoài tải lại
+                      trang. Nay bấm vào là kiểm tra ngay lập tức.
+                    */}
                     {!loginSuccess ? (
                       <button 
-                        onClick={handleStartOAuth}
-                        disabled={isLoggingIn}
-                        className="w-full py-3.5 px-4 bg-primary text-on-primary font-bold text-lg rounded-xl shadow-[0_4px_15px_rgba(0,229,255,0.4)] hover:scale-[1.02] transition-transform flex items-center justify-center gap-2 disabled:opacity-80 disabled:hover:scale-100"
+                        onClick={isLoggingIn ? handleCheckNow : handleStartOAuth}
+                        className="w-full py-3.5 px-4 bg-primary text-on-primary font-bold text-lg rounded-xl shadow-[0_4px_15px_rgba(0,229,255,0.4)] hover:scale-[1.02] transition-transform flex items-center justify-center gap-2"
                       >
                         {isLoggingIn ? (
                           <>
                             <span className="material-symbols-outlined animate-spin">progress_activity</span>
-                            Đang kết nối...
+                            Đang chuyển sang Facebook…
                           </>
                         ) : (
                           <>
@@ -982,7 +1204,7 @@ export default function Connections() {
                     ) : (
                       <div className="w-full py-3.5 px-4 bg-green-500/10 border border-green-500/30 text-green-400 font-bold text-lg rounded-xl flex items-center justify-center gap-2">
                         <span className="material-symbols-outlined">check_circle</span>
-                        Đã đăng nhập: Hoàng Tuấn
+                        Đã đăng nhập: {justConnectedName}
                       </div>
                     )}
                   </div>
@@ -1003,7 +1225,7 @@ export default function Connections() {
                           <img src={page.avatar} alt={page.name} className="w-12 h-12 rounded-full object-cover border border-outline-variant/50" />
                           <div>
                             <div className="text-base font-bold text-on-surface mb-0.5">{page.name}</div>
-                            <div className="text-sm text-on-surface-variant">{page.followers} người theo dõi</div>
+                            <div className="text-sm text-on-surface-variant">{page.subtitle}</div>
                           </div>
                         </div>
                         {page.connected ? (
@@ -1058,11 +1280,11 @@ export default function Connections() {
                       Quay lại
                     </button>
                     <button 
-                      disabled={selectedPages.length === 0}
-                      onClick={() => setConnectStep(4)}
+                      disabled={selectedPages.length === 0 || isLoggingIn}
+                      onClick={handleConfirmPages}
                       className="py-3 px-8 bg-primary text-on-primary font-bold rounded-xl shadow-[0_4px_15px_rgba(0,229,255,0.4)] hover:scale-105 transition-transform disabled:opacity-50 disabled:hover:scale-100 disabled:shadow-none"
                     >
-                      Tiếp tục
+                      {isLoggingIn ? 'Đang kết nối Trang…' : 'Tiếp tục'}
                     </button>
                   </div>
                 </>
@@ -1080,7 +1302,7 @@ export default function Connections() {
                       </div>
                       <div>
                         <div className="text-sm text-on-surface-variant mb-1">Nền tảng & Tài khoản</div>
-                        <div className="text-lg font-bold text-on-surface">{selectedPlatform.name} — Hoàng Tuấn</div>
+                        <div className="text-lg font-bold text-on-surface">{selectedPlatform.name} — {justConnectedName}</div>
                       </div>
                     </div>
                     

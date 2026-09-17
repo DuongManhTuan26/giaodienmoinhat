@@ -48,7 +48,7 @@ export default function Dashboard() {
   const handleApplyRecommendation = async () => {
     setIsApplying(true);
     try {
-      // Đưa thẳng sang màn hình huấn luyện AI bán hàng để chỉnh kịch bản,
+      // Đưa thẳng sang màn hình vai trò AI bán hàng để chỉnh kịch bản,
       // vì đề xuất chỉ có giá trị khi được người duyệt và sửa vào kịch bản thật.
       navigate('/auto-scripts');
     } finally {

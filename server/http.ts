@@ -40,11 +40,24 @@ export function errorHandler(
   }
 
   if (error instanceof ZernioError) {
-    // 4xx từ Zernio thường là lỗi cấu hình phía người dùng, chuyển nguyên văn.
-    const status = error.status >= 400 && error.status < 500 ? error.status : 502;
-    console.error(`[zernio] ${req.method} ${req.path}:`, error.message);
+    /*
+     * 4xx từ Zernio thường là lỗi cấu hình phía người dùng, chuyển nguyên văn.
+     *
+     * TRỪ 401 và 403: đó là Zernio từ chối KHOÁ API của hệ thống, không phải
+     * phiên đăng nhập của chủ shop hết hạn. Trả nguyên 401 ra ngoài thì giao
+     * diện tưởng hết phiên và đá chủ shop về màn hình đăng nhập, che mất lỗi
+     * thật. Đây là sự cố phía sau nên trả 502.
+     */
+    const status =
+      error.status === 401 || error.status === 403
+        ? 502
+        : error.status >= 400 && error.status < 500
+          ? error.status
+          : 502;
+    // Log giữ NGUYÊN VĂN để còn debug; phản hồi thì không được lộ tên nhà cung cấp.
+    console.error(`[zernio] ${req.method} ${req.path}:`, error.nguyenVan);
     res.status(status).json({
-      error: `Zernio: ${error.message}`,
+      error: `Hệ thống: ${error.message}`,
       code: error.code,
     });
     return;

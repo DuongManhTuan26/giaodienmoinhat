@@ -6,6 +6,51 @@
  * kỳ dữ liệu dựng sẵn nào.
  */
 
+export interface TuChuConfig {
+  bat: boolean;
+  tuLenDon: boolean;
+  chinhSachGiamGia: string;
+  chinhSachVanChuyen: string;
+  chinhSachKhieuNai: string;
+  chinhSachGapNguoi: string;
+  toiDaLuot: number;
+  baoChuShop: boolean;
+  nhacLai: boolean;
+  nhacSauPhut: number;
+  nhacToiDa: number;
+}
+
+export interface SalesStage {
+  id: string;
+  /** Tên bước — sửa được. */
+  ten: string;
+  /** AI phải làm gì ở bước này — sửa được. */
+  mucTieu: string;
+  enabled: boolean;
+}
+
+export interface AutoPilotConfig {
+  enabled: boolean;
+  /** 0 = Chủ nhật … 6 = Thứ bảy. */
+  days: number[];
+  /** "HH:MM" theo giờ Việt Nam. */
+  times: string[];
+  topics: string[];
+  goal: string;
+  guard: "publish" | "notify" | "approve";
+  notifyMinutes: number;
+  accountIds: string[];
+}
+
+export interface AutoPilotRun {
+  slot_key: string;
+  status: "running" | "ok" | "failed" | "skipped";
+  topic: string | null;
+  post_id: number | null;
+  note: string | null;
+  created_at: string;
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -19,6 +64,11 @@ export class ApiError extends Error {
   get isUnauthorized(): boolean {
     return this.status === 401;
   }
+
+  /** Không gọi được tới máy chủ (máy chủ tắt, mất mạng). Không phải lỗi dữ liệu. */
+  get isOffline(): boolean {
+    return this.status === 0;
+  }
 }
 
 async function request<T>(
@@ -27,14 +77,34 @@ async function request<T>(
 ): Promise<T> {
   const { method = "GET", body, signal } = options;
 
-  const response = await fetch(`/api${path}`, {
-    method,
-    headers: body === undefined ? {} : { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    // Cookie phiên phải được gửi kèm, nếu không mọi request đều là 401.
-    credentials: "same-origin",
-    signal,
-  });
+  /*
+   * Máy chủ không chạy, mất mạng, hoặc tunnel chết thì fetch ném TypeError
+   * chứ không phải ApiError. Mọi màn hình đều bắt theo `instanceof ApiError`
+   * nên trường hợp này rơi xuống câu chữ chung chung kiểu "Không tải được
+   * danh sách kênh" — chủ shop đọc xong vẫn không biết chuyện gì xảy ra và
+   * cũng không biết phải làm gì.
+   *
+   * Đổi thành ApiError mã 0 kèm câu nói rõ nguyên nhân, dùng chung cho mọi
+   * màn hình. Riêng lệnh bị huỷ chủ động (AbortSignal) phải giữ nguyên lỗi
+   * gốc, vì đó không phải sự cố.
+   */
+  let response: Response;
+  try {
+    response = await fetch(`/api${path}`, {
+      method,
+      headers: body === undefined ? {} : { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      // Cookie phiên phải được gửi kèm, nếu không mọi request đều là 401.
+      credentials: "same-origin",
+      signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    throw new ApiError(
+      "Không kết nối được tới máy chủ. Kiểm tra mạng rồi bấm Thử lại.",
+      0
+    );
+  }
 
   const text = await response.text();
   let data: unknown = null;
@@ -50,6 +120,23 @@ async function request<T>(
     const message =
       (data as { error?: string } | null)?.error ??
       `Yêu cầu thất bại (mã ${response.status})`;
+
+    /*
+     * Phiên chết giữa chừng thì phải đưa về màn hình đăng nhập NGAY.
+     *
+     * Trước đây App chỉ kiểm tra phiên đúng một lần lúc mở trang. Phiên mất sau
+     * đó (cookie bị xoá, hết hạn, đổi máy) thì giao diện vẫn vẽ đủ mọi màn hình
+     * như bình thường, còn mọi nút bấm đều lặng lẽ thất bại với dòng "Bạn cần
+     * đăng nhập". Nhìn từ phía chủ shop thì đó là "bấm không được gì" — không
+     * ai đoán ra là phải đăng nhập lại.
+     *
+     * Bắn một sự kiện để App đưa về trang đăng nhập. Không gọi thẳng vào React
+     * ở đây để lớp gọi API không phụ thuộc vào giao diện.
+     */
+    if (response.status === 401 && !path.startsWith("/auth/")) {
+      window.dispatchEvent(new CustomEvent("phien-het-han"));
+    }
+
     throw new ApiError(message, response.status);
   }
 
@@ -59,6 +146,7 @@ async function request<T>(
 const get = <T>(path: string, signal?: AbortSignal) => request<T>(path, { signal });
 const post = <T>(path: string, body?: unknown) => request<T>(path, { method: "POST", body });
 const patch = <T>(path: string, body?: unknown) => request<T>(path, { method: "PATCH", body });
+const put = <T>(path: string, body?: unknown) => request<T>(path, { method: "PUT", body });
 const del = <T>(path: string) => request<T>(path, { method: "DELETE" });
 
 // ---------------------------------------------------------------------------
@@ -70,7 +158,39 @@ export interface User {
   email: string;
   name: string;
   plan: string;
-  zernioProfileId: string | null;
+  /** 'admin' mới thấy được trang quản trị. Máy chủ vẫn tự kiểm lại mỗi request. */
+  role: 'admin' | 'shop';
+  profileRef: string | null;
+}
+
+/** Một tài khoản shop nhìn từ trang quản trị, kèm số liệu vận hành. */
+export interface TaiKhoanQuanTri {
+  id: number;
+  email: string;
+  name: string;
+  plan: string;
+  role: 'admin' | 'shop';
+  is_active: boolean;
+  created_at: string;
+  kenh: number;
+  hoi_thoai: number;
+  cho_nguoi: number;
+  don: number;
+  bai: number;
+  tai_lieu: number;
+  hoat_dong_cuoi: string | null;
+  tu_chu: string | null;
+  telegram: boolean | null;
+}
+
+export interface NhatKyQuanTri {
+  id: number;
+  action: string;
+  target_id: number | null;
+  target_email: string;
+  detail: Record<string, unknown>;
+  created_at: string;
+  admin_email: string | null;
 }
 
 export interface PlatformPermission {
@@ -84,7 +204,7 @@ export interface Platform {
   name: string;
   icon: string;
   /** Định danh gửi cho Zernio; null nghĩa là chưa kết nối được qua hệ thống. */
-  zernioPlatform: string | null;
+  platformKey: string | null;
   canPost: boolean;
   /** Có tin nhắn riêng — điều kiện để AI chạy trọn vòng bán hàng và chốt đơn. */
   canDm: boolean;
@@ -184,6 +304,17 @@ export interface Order {
   created_at: string;
 }
 
+/**
+ * Ảnh/video kèm bài, đúng dạng Zernio nhận trong `mediaItems`.
+ *
+ * `url` là publicUrl do Zernio trả về sau khi tải lên. Kho tạm giữ tệp 7 ngày,
+ * nên bài hẹn lịch xa hơn thế cần tải lại ảnh gần ngày đăng.
+ */
+export interface MediaItem {
+  url: string;
+  type: 'image' | 'video' | 'gif' | 'document';
+}
+
 export type PostStatus =
   | 'draft'
   | 'pending_approval'
@@ -194,9 +325,9 @@ export type PostStatus =
 
 export interface Post {
   id: number;
-  zernio_post_id: string | null;
+  platform_post_ref: string | null;
   content: string;
-  media: string[];
+  media: MediaItem[];
   target_account_ids: string[];
   status: PostStatus;
   scheduled_for: string | null;
@@ -251,6 +382,28 @@ export interface DashboardStats {
 // ---------------------------------------------------------------------------
 
 export const api = {
+  /** Quản trị hệ thống. Máy chủ chặn người không phải quản trị, đây chỉ là lớp gọi. */
+  admin: {
+    accounts: () => get<{ data: TaiKhoanQuanTri[] }>('/admin/accounts'),
+    audit: () => get<{ data: NhatKyQuanTri[] }>('/admin/audit'),
+    create: (payload: { email: string; name?: string }) =>
+      post<{ data: { id: number; email: string; name: string; matKhauTam: string } }>(
+        '/admin/accounts',
+        payload
+      ),
+    update: (id: number, payload: { name?: string; email?: string; plan?: string }) =>
+      patch<{ data: TaiKhoanQuanTri }>(`/admin/accounts/${id}`, payload),
+    setLocked: (id: number, locked: boolean) =>
+      post<{ data: { id: number; is_active: boolean } }>(`/admin/accounts/${id}/lock`, { locked }),
+    resetPassword: (id: number) =>
+      post<{ data: { matKhauTam: string } }>(`/admin/accounts/${id}/reset-password`),
+    remove: (id: number, confirmEmail: string) =>
+      request<{ success: boolean }>(`/admin/accounts/${id}`, {
+        method: 'DELETE',
+        body: { confirmEmail },
+      }),
+  },
+
   auth: {
     me: () => get<{ user: User }>("/auth/me"),
     login: (email: string, password: string) =>
@@ -258,22 +411,54 @@ export const api = {
     register: (email: string, password: string, name: string) =>
       post<{ user: User }>("/auth/register", { email, password, name }),
     logout: () => post<{ success: boolean }>("/auth/logout"),
+    /** Đổi mật khẩu. Mọi phiên đăng nhập khác sẽ bị đăng xuất. */
+    changePassword: (currentPassword: string, newPassword: string) =>
+      post<{ success: boolean; message: string }>("/auth/change-password", {
+        currentPassword,
+        newPassword,
+      }),
   },
 
   connections: {
     platforms: () => get<{ data: PlatformCatalog }>("/connections/platforms"),
     accounts: () => get<{ data: SocialAccount[] }>("/connections/accounts"),
+    /**
+     * Danh sách Trang chờ khách chọn, sau khi cấp quyền xong.
+     * waiting = true nghĩa là chưa cấp quyền xong, cứ chờ tiếp.
+     */
+    pendingSelection: () =>
+      get<{
+        data: {
+          waiting: boolean;
+          platform?: string;
+          step?: string;
+          pages: Array<{
+            id: string;
+            name: string;
+            username: string | null;
+            category: string | null;
+          }>;
+        };
+      }>("/connections/pending-selection"),
+    /** Chốt các Trang đã chọn — đây là bước thật sự tạo kênh. */
+    selectPages: (pageIds: string[]) =>
+      post<{ data: { connected: string[]; failed: Array<{ pageId: string; error: string }> } }>(
+        "/connections/select-pages",
+        { pageIds }
+      ),
     sync: () => post<{ synced: number; data: SocialAccount[] }>("/connections/sync"),
     connectUrl: (platform: string) =>
       post<{ url: string }>("/connections/connect-url", { platform }),
     disconnect: (accountId: string) =>
       del<{ success: boolean }>(`/connections/accounts/${encodeURIComponent(accountId)}`),
-    availableProfiles: () =>
-      get<{
-        data: Array<{ id: string; name: string; accountCount: number; isCurrent: boolean }>;
-      }>("/connections/available-profiles"),
-    adoptProfile: (profileId: string) =>
-      post<{ profileId: string }>("/connections/adopt-profile", { profileId }),
+    /*
+     * availableProfiles / adoptProfile CỐ Ý KHÔNG có ở đây.
+     *
+     * Hai đường dẫn đó cho phép "nhận" một hồ sơ Zernio có sẵn. Đưa lên giao
+     * diện là bắt khách phải biết Zernio tồn tại, đúng thứ phải tránh: khách
+     * trả tiền cho mình mà nhìn thấy nhà cung cấp hạ tầng thì họ mua thẳng bên
+     * đó. Giữ ở tầng máy chủ như công cụ nội bộ.
+     */
   },
 
   inbox: {
@@ -315,10 +500,12 @@ export const api = {
         }>;
         aiReport: { findings: string; recommendation: string } | null;
       }>(`/dashboard/stats?range=${range}`),
-    chart: (range: "7d" | "30d" = "7d") =>
-      get<{ data: Array<{ label: string; orders: number; revenue: number }> }>(
-        `/dashboard/chart?range=${range}`
-      ),
+    /*
+     * dashboard/chart CỐ Ý KHÔNG dùng: nó trả về đúng dữ liệu mà
+     * analytics/overview đã trả (đơn và doanh thu theo ngày), và màn hình
+     * Thống Kê đang vẽ từ nguồn đó. Hai nguồn cho cùng một biểu đồ là cách
+     * chắc chắn để hai chỗ hiện hai con số khác nhau.
+     */
     sparklines: () =>
       get<{ data: Array<{ id: number; label: string; value: string; data: number[] }> }>(
         "/dashboard/sparklines"
@@ -379,7 +566,7 @@ export const api = {
       status?: PostStatus;
       scheduledFor?: string | null;
       targetAccountIds?: string[];
-      media?: string[];
+      media?: MediaItem[];
       aiGenerated?: boolean;
       aiPrompt?: string;
     }) => post<{ data: Post }>("/posts", payload),
@@ -390,15 +577,72 @@ export const api = {
         status?: PostStatus;
         scheduledFor?: string | null;
         targetAccountIds?: string[];
+        media?: MediaItem[];
       }
     ) => patch<{ data: Post }>(`/posts/${id}`, payload),
+    /**
+     * Tải ảnh/video lên kho của Zernio.
+     *
+     * Server chỉ xin địa chỉ tải lên; chính trình duyệt gửi tệp thẳng tới kho,
+     * nên video lớn không phải đi xuyên qua server.
+     */
+    uploadMedia: async (file: File): Promise<MediaItem> => {
+      const { data } = await post<{
+        data: { uploadUrl: string; publicUrl: string; type: MediaItem['type'] };
+      }>("/posts/media/presign", {
+        filename: file.name,
+        contentType: file.type,
+        size: file.size,
+      });
+
+      const uploaded = await fetch(data.uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": file.type },
+        body: file,
+      });
+
+      if (!uploaded.ok) {
+        throw new ApiError(
+          `Tải tệp lên thất bại (HTTP ${uploaded.status}). Vui lòng thử lại.`,
+          uploaded.status
+        );
+      }
+
+      return { url: data.publicUrl, type: data.type };
+    },
     /** Đăng thật lên các kênh đã chọn qua Zernio. */
     publish: (id: number) => post<{ data: Post }>(`/posts/${id}/publish`),
+    /** Sửa phần chữ của bài ĐÃ ĐĂNG, ngay trên nền tảng. Không đổi được ảnh. */
+    updateOnPlatform: (id: number, content: string) =>
+      put<{ data: Post }>(`/posts/${id}/platform-content`, { content }),
+    /** Gỡ bài khỏi nền tảng, đưa về bản nháp để sửa rồi đăng lại. */
+    unpublish: (id: number) => post<{ data: Post }>(`/posts/${id}/unpublish`),
+    /**
+     * Hỏi lại nền tảng xem bài đang treo thật sự đã lên hay chưa.
+     * Chỉ đọc — không đăng lại, nên bấm bao nhiêu lần cũng không tạo bài trùng.
+     */
+    recheck: (id: number) =>
+      post<{ data: { found: boolean; message?: string; post?: Post } }>(
+        `/posts/${id}/recheck`
+      ),
     remove: (id: number) => del<{ success: boolean }>(`/posts/${id}`),
   },
 
   settings: {
     autoScripts: () => get<{ data: any[] }>("/settings/auto-scripts"),
+    /** Bốn con số thật trên đầu màn hình Comment sang tin nhắn. */
+    autoScriptStats: () =>
+      get<{
+        data: {
+          activeScripts: number;
+          postsCovered: number;
+          firstDmSent: number;
+          customersReplied: number;
+          replyRate: number | null;
+          ordersClosed: number;
+          ordersDelta: number;
+        };
+      }>("/settings/auto-scripts/stats"),
     createAutoScript: (payload: Record<string, unknown>) =>
       post<{ data: any }>("/settings/auto-scripts", payload),
     updateAutoScript: (id: number, payload: Record<string, unknown>) =>
@@ -414,6 +658,11 @@ export const api = {
           enabled: boolean;
           events: Record<string, boolean>;
           verifiedAt: string | null;
+          usesPlatformBot: boolean;
+          linkedAccountName: string | null;
+          linkedAt: string | null;
+          platformBotUsername: string | null;
+          connected: boolean;
           logs: Array<{
             id: number;
             kind: string;
@@ -424,6 +673,10 @@ export const api = {
           }>;
         };
       }>("/settings/telegram"),
+    /** Tạo liên kết một lần bấm; khách mở liên kết rồi bấm Start là xong. */
+    linkTelegram: () =>
+      post<{ data: { url: string; botUsername: string; code: string } }>("/settings/telegram/link"),
+    unlinkTelegram: () => post<{ message: string }>("/settings/telegram/unlink"),
     saveTelegram: (payload: {
       botToken?: string;
       chatId?: string;
@@ -432,6 +685,42 @@ export const api = {
     }) => request<{ data: unknown }>("/settings/telegram", { method: "PUT", body: payload }),
     testTelegram: () => post<{ message: string }>("/settings/telegram/test"),
 
+    /**
+     * Trạng thái hàng rào an toàn: hạn mức thật, mức đang dùng, kênh bị AI tự
+     * tạm dừng, và lý do các tin bị chặn.
+     */
+    guardrails: () =>
+      get<{
+        data: {
+          config: Record<string, number | boolean>;
+          rateLimit: { perMinute: number; source: string; remaining: number | null; resetAt: string | null };
+          usage: {
+            sentLastMinute: number; aiSentLastHour: number;
+            failureRateLastHour: number; totalLastHour: number; blockedLastDay: number;
+          };
+          pausedAccounts: Array<{
+            id: string; display_name: string;
+            ai_paused_until: string; ai_pause_reason: string;
+          }>;
+          blockedReasons: Array<{ block_reason: string; n: number }>;
+        };
+      }>("/settings/guardrails"),
+    /**
+     * Siết chặt hàng rào an toàn.
+     *
+     * Máy chủ tự kẹp mọi giá trị trong trần CHÍNH SÁCH của nền tảng — chủ shop
+     * chỉ có thể làm chặt hơn, không bao giờ nới lỏng vượt mức cho phép.
+     */
+    saveGuardrails: (payload: {
+      maxSendsPerMinute?: number;
+      maxAiSendsPerHour?: number;
+      failureRateThreshold?: number;
+      autoPauseMinutes?: number;
+      autoPauseEnabled?: boolean;
+    }) => request<{ data: unknown }>("/settings/guardrails", { method: "PUT", body: payload }),
+    /** Bật lại AI cho một kênh đang bị tạm dừng. */
+    resumeAi: (accountId: string) =>
+      post<{ success: boolean; message?: string }>(`/settings/guardrails/resume/${accountId}`),
     safety: () =>
       get<{
         data: {
@@ -488,6 +777,18 @@ export const api = {
       get<{ data: Post[] }>("/ads/boostable-posts"),
     setCampaignStatus: (campaignIds: string[], status: "ACTIVE" | "PAUSED" | "ARCHIVED") =>
       post<{ data: unknown }>("/ads/campaigns/status", { campaignIds, status }),
+    /**
+     * Sửa ngân sách ngay trong app, đi qua Zernio.
+     *
+     * Chiến dịch đặt ngân sách theo từng nhóm quảng cáo sẽ trả lỗi 409 kèm lời
+     * giải thích, không phải lỗi kỹ thuật.
+     */
+    updateCampaignBudget: (
+      id: string,
+      payload: { amount: number; budgetType?: "daily" | "lifetime"; platform?: string },
+    ) => patch<{ data: unknown }>(`/ads/campaigns/${id}/budget`, payload),
+    updateAudience: (id: string, payload: { name?: string; description?: string }) =>
+      request<{ data: unknown }>(`/ads/audiences/${id}`, { method: "PUT", body: payload }),
     duplicateCampaign: (id: string) =>
       post<{ data: unknown }>(`/ads/campaigns/${encodeURIComponent(id)}/duplicate`),
     campaignAnalytics: (id: string, range = "last_7d") =>
@@ -552,9 +853,38 @@ export const api = {
       kind: string,
       payload: { systemPrompt: string; tone?: string; settings?: Record<string, unknown> }
     ) => request<{ data: AiConfig }>(`/ai/configs/${kind}`, { method: "PUT", body: payload }),
+    salesAutonomy: () => get<{ data: { config: TuChuConfig } }>("/ai/sales-autonomy"),
+    saveSalesAutonomy: (config: TuChuConfig) =>
+      request<{ data: { config: TuChuConfig; hoiThoaiDaCuu?: number } }>("/ai/sales-autonomy", {
+        method: "PUT",
+        body: { config },
+      }),
+    salesStages: () => get<{ data: { stages: SalesStage[] } }>("/ai/sales-stages"),
+    saveSalesStages: (stages: SalesStage[]) =>
+      request<{ data: { stages: SalesStage[] } }>("/ai/sales-stages", {
+        method: "PUT",
+        body: { stages },
+      }),
+    autoPilot: () =>
+      get<{ data: { config: AutoPilotConfig; runs: AutoPilotRun[] } }>("/ai/auto-pilot"),
+    saveAutoPilot: (config: AutoPilotConfig) =>
+      request<{ data: { config: AutoPilotConfig } }>("/ai/auto-pilot", {
+        method: "PUT",
+        body: { config },
+      }),
+    /** Lưu vài khoá trong settings mà không đè phần vai trò đã nhập. */
+    patchSettings: (kind: string, settings: Record<string, unknown>) =>
+      patch<{ data: AiConfig }>(`/ai/configs/${kind}/settings`, { settings }),
     addDocument: (
       kind: string,
-      payload: { filename: string; mimeType?: string; text?: string; sizeBytes?: number }
+      payload: {
+        filename: string;
+        mimeType?: string;
+        text?: string;
+        sizeBytes?: number;
+        /** Ảnh dạng data URL. Máy chủ đọc chữ trong ảnh rồi lưu phần chữ đó. */
+        imageDataUrl?: string;
+      }
     ) => post<{ data: AiDocument }>(`/ai/configs/${kind}/documents`, payload),
     removeDocument: (kind: string, id: number) =>
       del<{ success: boolean }>(`/ai/configs/${kind}/documents/${id}`),
@@ -563,6 +893,28 @@ export const api = {
         topic,
         goal,
         count,
+      }),
+    /** AI tạo ảnh minh hoạ cho bài. Mỗi lượt tốn tiền nên chỉ gọi khi chủ shop bấm. */
+    generateImage: (payload: {
+      content: string;
+      /** Mô tả riêng cho ảnh này. Bỏ trống thì AI dựa vào nội dung bài. */
+      prompt?: string;
+      style?: string;
+      /** Ảnh mẫu để AI vẽ lại theo phong cách mới, giữ nguyên chủ thể. */
+      sample?: string;
+    }) =>
+      post<{
+        data: {
+          url: string; type: 'image'; model: string; costUsd: number;
+          moTa: string; phongCach: string; tuAnhMau: boolean;
+        };
+      }>('/ai/generate-image', payload),
+    /** Phong cách vẽ ảnh đang đặt. */
+    imageStyle: () => get<{ data: { phongCach: string; macDinh: string } }>('/ai/image-style'),
+    /** Lưu phong cách vẽ ảnh làm mặc định cho lần sau và cho lịch tự đăng. */
+    saveImageStyle: (phongCach: string) =>
+      patch<{ success: boolean }>('/ai/configs/content/settings', {
+        settings: { anhPhongCach: phongCach },
       }),
     test: (kind: string, message: string) =>
       post<{ data: { reply: string; model: string; usage: { costUsd: number } } }>("/ai/test", {

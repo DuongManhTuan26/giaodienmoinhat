@@ -39,7 +39,7 @@ export default function SetupComplete({ onFinish }: { onFinish: () => void }) {
         </button>
 
         <div className="w-full border border-outline-variant p-4 rounded-lg bg-surface-container-low text-center">
-          <p className="font-body-md text-on-surface-variant text-sm">Lưu ý: Tự động trả lời hiện đang TẮT. Bạn tự bật khi đã sẵn sàng.</p>
+          <p className="font-body-md text-on-surface-variant text-sm">Lưu ý: Tự động trả lời hiện đang TẮT. Bạn có thể bật khi đã sẵn sàng.</p>
         </div>
       </div>
     </div>

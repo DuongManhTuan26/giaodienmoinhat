@@ -46,12 +46,16 @@ export async function verifyPassword(
 // Phiên đăng nhập
 // ---------------------------------------------------------------------------
 
+export type VaiTro = "admin" | "shop";
+
 export interface SessionUser {
   id: number;
   email: string;
   name: string;
   plan: string;
-  zernioProfileId: string | null;
+  /** Luôn đọc từ database mỗi request, không bao giờ tin phía trình duyệt. */
+  role: VaiTro;
+  profileRef: string | null;
 }
 
 declare global {
@@ -129,9 +133,10 @@ async function loadSession(req: Request): Promise<SessionRow | null> {
     email: string;
     name: string;
     plan: string;
-    zernio_profile_id: string | null;
+    role: string;
+    profile_ref: string | null;
   }>(
-    `SELECT s.id AS session_id, u.id, u.email, u.name, u.plan, u.zernio_profile_id
+    `SELECT s.id AS session_id, u.id, u.email, u.name, u.plan, u.role, u.profile_ref
        FROM sessions s
        JOIN users u ON u.id = s.user_id
       WHERE s.id = $1 AND s.expires_at > now() AND u.is_active = TRUE`,
@@ -146,7 +151,12 @@ async function loadSession(req: Request): Promise<SessionRow | null> {
     email: row.email,
     name: row.name,
     plan: row.plan,
-    zernioProfileId: row.zernio_profile_id,
+    /*
+     * Vai trò lấy từ DATABASE mỗi request, không lấy từ phía trình duyệt.
+     * Ai sửa được vai trò trong cookie là chiếm được quyền quản trị cả hệ thống.
+     */
+    role: row.role === "admin" ? "admin" : "shop",
+    profileRef: row.profile_ref,
   };
 }
 

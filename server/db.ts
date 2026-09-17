@@ -21,6 +21,20 @@ export const pool = new Pool({
   connectionTimeoutMillis: 10_000,
   // Giữ nhịp TCP để thiết bị mạng ở giữa không âm thầm cắt kết nối.
   keepAlive: true,
+  /*
+   * Câu lệnh KHÔNG được phép treo vĩnh viễn.
+   *
+   * Đã xảy ra thật ngày 15/09/2026: máy mất mạng (read ENETDOWN) đúng lúc
+   * worker đang rút hàng đợi. Kết nối TCP chết lặng lẽ, câu lệnh không báo lỗi
+   * mà cũng không bao giờ trả về, nên `await drainQueue()` đứng mãi. Máy chủ
+   * HTTP vẫn trả 200 bình thường, còn 34 tin nhắn và bình luận của khách nằm
+   * im trong hàng đợi suốt 5 tiếng — AI câm mà không ai hay.
+   *
+   * query_timeout cắt ở phía mình, statement_timeout cắt ở phía database.
+   * Phải có cả hai: mạng đứt thì phía database không nghe được lệnh huỷ.
+   */
+  query_timeout: 30_000,
+  statement_timeout: 30_000,
 });
 
 /**

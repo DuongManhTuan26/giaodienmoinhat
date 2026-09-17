@@ -1,5 +1,5 @@
 /**
- * Nhãn và mô tả cho màn hình huấn luyện AI bán hàng.
+ * Nhãn và mô tả cho màn hình vai trò AI bán hàng.
  *
  * Đây là nội dung thiết kế, chuyển nguyên văn từ bản mẫu ban đầu. Trạng thái
  * bật/tắt và giá trị thật do backend lưu; tệp này chỉ giữ phần chữ hiển thị.

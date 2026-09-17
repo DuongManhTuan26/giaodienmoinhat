@@ -37,7 +37,6 @@ export const PRICING_PLANS: PricingPlan[] = [
       { name: 'AI tự viết bài', included: false },
     ],
     buttonText: 'Chọn gói này',
-    isCurrent: false
   },
   {
     id: 'pro', maxChannels: 3,
@@ -51,8 +50,7 @@ export const PRICING_PLANS: PricingPlan[] = [
       { name: 'Tệp đối tượng quảng cáo', included: true },
       { name: 'Báo cáo chi tiết', included: true }
     ],
-    buttonText: 'Gói hiện tại',
-    isCurrent: true
+    buttonText: 'Chọn gói này',
   },
   {
     id: 'enterprise', maxChannels: 10,
@@ -65,10 +63,38 @@ export const PRICING_PLANS: PricingPlan[] = [
       { name: 'Hỗ trợ riêng qua Telegram', included: true },
       { name: 'Ưu tiên xử lý khi có sự cố', included: true }
     ],
-    buttonText: 'Nâng cấp',
-    isCurrent: false
+    buttonText: 'Chọn gói này',
   }
 ];
+
+/**
+ * Gói dùng thử.
+ *
+ * Không nằm trong danh sách bán vì không bấm mua được. Tách riêng để trang
+ * không phải mượn tạm gói "Khởi đầu" mà hiển thị — trước đây shop đang dùng
+ * thử bị ghi là đang dùng gói Khởi đầu 390.000 đ/tháng.
+ *
+ * maxChannels = 0 nghĩa là chưa đặt hạn mức, không phải "được nối 0 kênh".
+ * Hiện máy chủ chưa chặn số kênh theo gói, nên hiển thị số hạn mức nào ở đây
+ * cũng là bịa. Khi nào chặn thật thì mới điền số thật vào.
+ */
+export const GOI_DUNG_THU: PricingPlan = {
+  id: 'trial',
+  name: 'Dùng thử',
+  price: 'Miễn phí',
+  maxChannels: 0,
+  features: [
+    { name: 'Nối kênh và chạy thử toàn bộ tính năng', included: true },
+    { name: 'AI trả lời tin nhắn và bình luận', included: true },
+    { name: 'Cảnh báo Telegram', included: true },
+  ],
+  buttonText: 'Chọn gói này',
+};
+
+/** Gói đang dùng, đối chiếu theo mã gói lưu trong database. */
+export function goiHienTai(maGoi: string): PricingPlan {
+  return PRICING_PLANS.find((p) => p.id === maGoi) ?? GOI_DUNG_THU;
+}
 
 export interface PlatformRule {
   title: string;

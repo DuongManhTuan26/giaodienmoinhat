@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch server.ts",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=esm --packages=external --sourcemap --outfile=dist/server.mjs && npm run build:migrations",
+    "build": "rm -rf dist && NODE_ENV=production vite build && esbuild server.ts --bundle --platform=node --format=esm --packages=external --sourcemap --outfile=dist/server.mjs && npm run build:migrations",
     "start": "node dist/server.mjs",
     "preview": "vite preview",
     "clean": "rm -rf dist",
@@ -14,7 +14,10 @@
     "migrate:reset": "tsx server/cli-migrate.ts --reset",
     "typecheck": "tsc --noEmit",
     "build:migrations": "mkdir -p dist/migrations && cp server/migrations/*.sql dist/migrations/",
-    "tunnel": "node scripts/tunnel-watchdog.mjs"
+    "tunnel": "node scripts/tunnel-watchdog.mjs",
+    "kiem-tra": "tsx scripts/kiem-tra.mts",
+    "liet-ke": "tsx scripts/liet-ke.mts",
+    "kiem-tra-nguoc": "tsx scripts/kiem-tra-nguoc.mts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",

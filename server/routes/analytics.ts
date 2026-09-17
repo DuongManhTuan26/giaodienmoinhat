@@ -3,6 +3,8 @@ import { query, queryOne } from "../db.js";
 import { requireAuth } from "../auth.js";
 import { AppError, route } from "../http.js";
 import { chatJson, asRecord, optionalString } from "../services/ai.js";
+import { boMarkdown, DAN_KHONG_MARKDOWN } from "../services/text.js";
+import { loadKnowledge } from "../services/knowledge.js";
 
 export const analyticsRouter = Router();
 
@@ -90,20 +92,26 @@ analyticsRouter.get(
       return Math.round(((current - before) / before) * 100);
     };
 
-    // Chuỗi số liệu theo ngày.
+    /*
+     * Chuỗi số liệu theo ngày, cắt ngày theo giờ Việt Nam.
+     *
+     * Database chạy GMT nên date_trunc('day', ...) cắt ngày lúc 7 giờ sáng giờ
+     * Việt Nam. Đã tái hiện: đơn đặt 02:00 ngày 13/09 giờ Việt Nam bị xếp vào
+     * cột 12/09, và biểu đồ còn không có cột 13/09 cho tới 7 giờ sáng.
+     */
     const series = await query(
       `SELECT to_char(d.day, 'DD/MM') AS name,
               COALESCE((SELECT SUM(o.total) FROM orders o
                  WHERE o.user_id = $2 AND o.status <> 'cancelled'
-                   AND date_trunc('day', o.created_at) = d.day), 0)::bigint AS revenue,
+                   AND date_trunc('day', o.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh') = d.day), 0)::bigint AS revenue,
               (SELECT COUNT(*) FROM orders o
-                 WHERE o.user_id = $2 AND date_trunc('day', o.created_at) = d.day)::int AS orders,
+                 WHERE o.user_id = $2 AND date_trunc('day', o.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh') = d.day)::int AS orders,
               (SELECT COUNT(*) FROM messages m
                  WHERE m.user_id = $2 AND m.sender_type = 'ai'
-                   AND date_trunc('day', m.sent_at) = d.day)::int AS "aiInteractions"
+                   AND date_trunc('day', m.sent_at AT TIME ZONE 'Asia/Ho_Chi_Minh') = d.day)::int AS "aiInteractions"
          FROM generate_series(
-                date_trunc('day', now()) - (($1::int - 1) || ' days')::interval,
-                date_trunc('day', now()),
+                date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh') - (($1::int - 1) || ' days')::interval,
+                date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh'),
                 interval '1 day'
               ) AS d(day)
         ORDER BY d.day`,
@@ -206,7 +214,7 @@ analyticsRouter.post(
           findings:
             `Trong ${days} ngày qua chưa có hội thoại hay đơn hàng nào để phân tích.`,
           recommendation:
-            "Hãy kết nối kênh bán hàng và để AI tiếp nhận vài hội thoại đầu tiên. " +
+            "Vui lòng kết nối kênh bán hàng và để AI tiếp nhận vài hội thoại đầu tiên. " +
             "Báo cáo sẽ tự xuất hiện ngay khi có dữ liệu thật.",
           actions: [],
         },
@@ -237,6 +245,9 @@ analyticsRouter.post(
       [userId]
     );
 
+    // Tài liệu chủ shop đã dạy riêng cho AI thống kê.
+    const knowledge = await loadKnowledge(userId, "analytics");
+
     const result = await chatJson({
       task: "analytics",
       messages: [
@@ -245,9 +256,11 @@ analyticsRouter.post(
           content:
             (config?.system_prompt ??
               "Bạn là chuyên viên phân tích dữ liệu bán hàng, viết bằng tiếng Việt.") +
+            knowledge +
             "\n\nChỉ dùng số liệu được cung cấp. Tuyệt đối không bịa số, không nhắc " +
             "tới kênh hay chiến dịch không xuất hiện trong dữ liệu. " +
-            'Trả JSON: {"findings": string, "recommendation": string, "actions": string[]}',
+            DAN_KHONG_MARKDOWN +
+            ' Trả JSON: {"findings": string, "recommendation": string, "actions": string[]}',
         },
         {
           role: "user",
@@ -267,10 +280,12 @@ analyticsRouter.post(
         const object = asRecord(value);
         return {
           hasData: true,
-          findings: optionalString(object.findings) ?? "Chưa đủ dữ liệu để kết luận.",
-          recommendation: optionalString(object.recommendation) ?? "",
+          findings: boMarkdown(optionalString(object.findings) ?? "Chưa đủ dữ liệu để kết luận."),
+          recommendation: boMarkdown(optionalString(object.recommendation) ?? ""),
           actions: Array.isArray(object.actions)
-            ? object.actions.filter((a): a is string => typeof a === "string")
+            ? object.actions
+                .filter((a): a is string => typeof a === "string")
+                .map(boMarkdown)
             : [],
         };
       },
@@ -278,8 +293,18 @@ analyticsRouter.post(
 
     // Lưu lại để Bảng điều khiển đọc mà không phải gọi AI lúc tải trang.
     await query(
+      /*
+       * Ngày báo cáo phải theo GIỜ VIỆT NAM, không theo giờ của database.
+       *
+       * Đã đo: database chạy GMT. Lúc 02:25 sáng ngày 13 ở Việt Nam thì
+       * CURRENT_DATE vẫn là ngày 12. Nghĩa là báo cáo chủ shop bấm tạo lúc rạng
+       * sáng bị ghi ngày HÔM QUA — và chỉ mục duy nhất (user_id, report_date,
+       * kind) khiến ON CONFLICT GHI ĐÈ luôn báo cáo hôm qua.
+       *
+       * Mỗi đêm mất một báo cáo mà không ai biết.
+       */
       `INSERT INTO ai_reports (user_id, report_date, kind, metrics, findings, recommendation)
-       VALUES ($1, CURRENT_DATE, 'daily', $2, $3, $4)
+       VALUES ($1, (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date, 'daily', $2, $3, $4)
        ON CONFLICT (user_id, report_date, kind) DO UPDATE SET
          metrics = EXCLUDED.metrics,
          findings = EXCLUDED.findings,

@@ -5,7 +5,7 @@ import { env, missingOptionalConfig } from "./env.js";
 import { attachUser } from "./auth.js";
 import { errorHandler } from "./http.js";
 import { authRouter } from "./routes/auth.js";
-import { connectionsRouter } from "./routes/connections.js";
+import { connectionsRouter, connectionsPublicRouter } from "./routes/connections.js";
 import { webhooksRouter } from "./routes/webhooks.js";
 import { inboxRouter } from "./routes/inbox.js";
 import { dashboardRouter } from "./routes/dashboard.js";
@@ -15,6 +15,8 @@ import { postsRouter } from "./routes/posts.js";
 import { settingsRouter } from "./routes/settings.js";
 import { adsRouter } from "./routes/ads.js";
 import { analyticsRouter } from "./routes/analytics.js";
+import { hoanDiaChiKho, laDiaChiKho } from "./services/media-proxy.js";
+import { adminRouter } from "./routes/admin.js";
 
 export async function createApp() {
   const app = express();
@@ -33,10 +35,44 @@ export async function createApp() {
     res.json({ status: "ok", env: env.nodeEnv, time: new Date().toISOString() });
   });
 
+  /*
+   * Tải hộ ảnh từ kho của nhà cung cấp.
+   *
+   * Trình duyệt chỉ thấy /media/<mã>, không thấy tên kho. Phải đứng trước mọi
+   * router có requireAuth vì thẻ <img> không gửi kèm gì để xác thực, và ảnh
+   * bài đăng vốn đã công khai trên Fanpage rồi.
+   */
+  app.get("/media/:ma", async (req, res) => {
+    const that = hoanDiaChiKho(`/media/${req.params.ma}`);
+    if (!laDiaChiKho(that)) {
+      res.status(400).json({ error: "Địa chỉ ảnh không hợp lệ" });
+      return;
+    }
+    try {
+      const nguon = await fetch(that, { signal: AbortSignal.timeout(30_000) });
+      if (!nguon.ok || !nguon.body) {
+        res.status(nguon.status === 404 ? 404 : 502).end();
+        return;
+      }
+      res.setHeader("Content-Type", nguon.headers.get("content-type") ?? "application/octet-stream");
+      const dai = nguon.headers.get("content-length");
+      if (dai) res.setHeader("Content-Length", dai);
+      res.setHeader("Cache-Control", "private, max-age=3600");
+      res.send(Buffer.from(await nguon.arrayBuffer()));
+    } catch {
+      res.status(502).end();
+    }
+  });
+
   // Webhook không dùng cookie phiên — xác thực bằng chữ ký HMAC.
   app.use("/api/webhooks", webhooksRouter);
 
   app.use("/api/auth", authRouter);
+  /*
+   * Đường quay về của luồng cấp quyền phải đứng TRƯỚC router có requireAuth:
+   * đây là điều hướng từ facebook.com quay lại, không được phụ thuộc cookie.
+   */
+  app.use("/api/connections", connectionsPublicRouter);
   app.use("/api/connections", connectionsRouter);
   app.use("/api/inbox", inboxRouter);
   app.use("/api/dashboard", dashboardRouter);
@@ -46,6 +82,8 @@ export async function createApp() {
   app.use("/api/settings", settingsRouter);
   app.use("/api/ads", adsRouter);
   app.use("/api/analytics", analyticsRouter);
+  // Quản trị hệ thống. Tự chặn người không phải quản trị ngay trong router.
+  app.use("/api/admin", adminRouter);
 
   // Bất kỳ đường dẫn /api nào không khớp đều trả JSON, không trả trang HTML.
   app.use("/api", (_req, res) => {
@@ -53,7 +91,11 @@ export async function createApp() {
   });
 
   if (env.isProduction) {
-    const distPath = path.join(process.cwd(), "dist");
+    /*
+     * CHỈ phục vụ dist/client. Không bao giờ trỏ vào dist/ vì trong đó còn
+     * server.mjs, server.mjs.map và migrations/*.sql — tải về được hết.
+     */
+    const distPath = path.join(process.cwd(), "dist", "client");
     app.use(express.static(distPath));
     app.get("*", (_req, res) => {
       res.sendFile(path.join(distPath, "index.html"));

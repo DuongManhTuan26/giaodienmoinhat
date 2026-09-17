@@ -153,33 +153,84 @@ async function checkSuppression() {
   }
 }
 
-/** Dựng tunnel mới và đọc URL từ log của cloudflared. */
+/**
+ * Dựng tunnel mới và đọc URL từ log của cloudflared.
+ *
+ * BA LỖI ĐÃ TỪNG XẢY RA THẬT, sửa ở đây:
+ *
+ * 1. Không giết tiến trình cũ trước khi dựng cái mới. Sau vài giờ có tới NĂM
+ *    tiến trình cloudflared cùng chạy, mỗi cái một địa chỉ, chỉ một cái được
+ *    đăng ký — bốn cái còn lại chạy vô ích và vẫn gọi Cloudflare.
+ *
+ * 2. Khi hết 60 giây không thấy URL thì chỉ reject mà KHÔNG giết tiến trình
+ *    vừa đẻ ra. Nó thành tiến trình mồ côi, tiếp tục thử kết nối mãi.
+ *
+ * 3. Không phân biệt lỗi tạm thời với việc bị Cloudflare CHẶN TẦN SUẤT. Dựng
+ *    lại đều đặn 30 giây một lần suốt hàng giờ dẫn tới:
+ *       status_code="429 Too Many Requests", error code: 1015
+ *    Tức là chính vòng thử lại đã tự tạo ra lệnh chặn, rồi lại thử lại tiếp
+ *    trong khi đang bị chặn. Nay nhận diện được và báo ra ngoài để lùi thật xa.
+ */
 function startTunnel() {
   return new Promise((resolve, reject) => {
-    child = spawn(CLOUDFLARED, ["tunnel", "--url", LOCAL_URL, "--no-autoupdate"]);
+    // Luôn dọn tiến trình cũ trước, không bao giờ để hai cái cùng sống.
+    if (child) {
+      try { child.kill("SIGKILL"); } catch { /* đã chết rồi */ }
+      child = null;
+    }
+
+    const proc = spawn(CLOUDFLARED, ["tunnel", "--url", LOCAL_URL, "--no-autoupdate"]);
+    child = proc;
 
     let settled = false;
+    let biChan = false;
+
+    const ketThuc = (fn, arg) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(arg);
+    };
+
     const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        reject(new Error("Quá 60 giây không thấy URL tunnel"));
-      }
+      // Giết luôn, không để lại tiến trình mồ côi.
+      try { proc.kill("SIGKILL"); } catch { /* đã chết rồi */ }
+      if (child === proc) child = null;
+      ketThuc(
+        reject,
+        new Error(
+          biChan
+            ? "RATE_LIMIT: Cloudflare đang chặn tần suất tạo tunnel (429 / mã 1015)"
+            : "Quá 60 giây không thấy URL tunnel"
+        )
+      );
     }, 60_000);
 
     const onData = (chunk) => {
-      const match = String(chunk).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
-      if (match && !settled) {
-        settled = true;
-        clearTimeout(timer);
-        resolve(match[0]);
+      const text = String(chunk);
+
+      // Nhận diện lệnh chặn ngay khi thấy, để lùi thật xa thay vì thử lại dồn dập.
+      if (/429|Too Many Requests|error code: 1015/i.test(text)) {
+        biChan = true;
+        try { proc.kill("SIGKILL"); } catch { /* đã chết rồi */ }
+        if (child === proc) child = null;
+        ketThuc(
+          reject,
+          new Error("RATE_LIMIT: Cloudflare đang chặn tần suất tạo tunnel (429 / mã 1015)")
+        );
+        return;
       }
+
+      const match = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+      if (match) ketThuc(resolve, match[0]);
     };
 
-    child.stdout.on("data", onData);
-    child.stderr.on("data", onData);
-    child.on("exit", (code) => {
+    proc.stdout.on("data", onData);
+    proc.stderr.on("data", onData);
+    proc.on("exit", (code) => {
       log(`Tiến trình cloudflared đã thoát (mã ${code})`);
-      child = null;
+      if (child === proc) child = null;
+      ketThuc(reject, new Error(`cloudflared thoát sớm (mã ${code})`));
     });
   });
 }
@@ -215,20 +266,77 @@ async function rotate() {
 
 async function main() {
   log("Bắt đầu trông tunnel");
-  await rotate();
+
+  /*
+   * Lần dựng đầu tiên KHÔNG được phép làm chết tiến trình.
+   *
+   * Bản trước gọi thẳng rotate() không bọc, nên khi Cloudflare đang chặn tần
+   * suất thì watchdog tắt ngay lúc khởi động — đúng lúc cần nó nhất. Nay coi
+   * thất bại đầu tiên như mọi thất bại khác: lùi rồi thử lại ở vòng sau.
+   */
+  let khoiDongHong = false;
+  try {
+    await rotate();
+  } catch (error) {
+    khoiDongHong = true;
+    log(`Chưa dựng được tunnel lúc khởi động: ${error.message}`);
+    log("Vẫn chạy tiếp và sẽ thử lại theo nhịp lùi dần.");
+  }
+
+  /*
+   * Lùi dần khi dựng lại thất bại.
+   *
+   * Bản trước thử lại đúng 30 giây một lần, bất kể lỗi gì, không giới hạn. Sau
+   * vài giờ Cloudflare chặn tần suất (429 / mã 1015) — chính vòng thử lại đã
+   * tạo ra lệnh chặn, rồi tiếp tục nện vào trong khi đang bị chặn nên không bao
+   * giờ thoát ra được. Chủ shop mất webhook suốt thời gian đó mà không hay.
+   *
+   * Nay: thất bại thường thì lùi gấp đôi mỗi lần (1, 2, 4… phút, tối đa 15).
+   * Bị chặn tần suất thì lùi thẳng 15 phút, vì thử sớm chỉ kéo dài lệnh chặn.
+   */
+  let soLanHong = khoiDongHong ? 1 : 0;
+  let choToiPhut = khoiDongHong ? 15 : 0;
+
+  const LUI_TOI_DA_PHUT = 15;
+  const LUI_KHI_BI_CHAN_PHUT = 15;
 
   setInterval(async () => {
+    // Đang trong thời gian lùi thì không đụng vào Cloudflare.
+    if (choToiPhut > 0) {
+      choToiPhut -= CHECK_INTERVAL_MS / 60_000;
+      return;
+    }
+
     const healthy = currentUrl ? await tunnelHealthy(currentUrl) : false;
 
     if (!healthy) {
       log("Tunnel không phản hồi — đang dựng lại");
       try {
         await rotate();
+        soLanHong = 0;
       } catch (error) {
-        log(`Dựng lại thất bại: ${error.message}. Sẽ thử lại ở nhịp sau.`);
+        soLanHong += 1;
+        const biChan = String(error.message).startsWith("RATE_LIMIT");
+        choToiPhut = biChan
+          ? LUI_KHI_BI_CHAN_PHUT
+          : Math.min(2 ** (soLanHong - 1), LUI_TOI_DA_PHUT);
+
+        log(
+          `Dựng lại thất bại (lần ${soLanHong}): ${error.message}. ` +
+            `Chờ ${choToiPhut} phút rồi mới thử lại.`
+        );
+
+        if (biChan) {
+          log(
+            "Bị Cloudflare chặn tần suất. Đây là giới hạn của tunnel tạm miễn phí. " +
+              "Muốn hết hẳn thì phải dùng tên miền cố định, không dùng trycloudflare."
+          );
+        }
       }
       return;
     }
+
+    soLanHong = 0;
 
     // Tunnel sống vẫn phải xét riêng trạng thái ngắt của Zernio: hai tình
     // trạng độc lập, và ngắt không tự hết khi tunnel hồi phục.

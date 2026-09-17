@@ -2,6 +2,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { useCallback, useEffect, useState } from 'react';
 import Sidebar from './components/Sidebar';
 import TopNavBar from './components/TopNavBar';
+import ErrorBoundary from './components/ErrorBoundary';
 import Dashboard from './pages/Dashboard';
 import Inbox from './pages/Inbox';
 import Orders from './pages/Orders';
@@ -11,6 +12,7 @@ import AutoScripts from './pages/AutoScripts';
 import TelegramAlerts from './pages/TelegramAlerts';
 import Connections from './pages/Connections';
 import Pricing from './pages/Pricing';
+import Admin from './pages/Admin';
 import Analytics from './pages/Analytics';
 import Auth from './pages/Auth';
 import Onboarding from './pages/Onboarding';
@@ -48,6 +50,21 @@ export default function App() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  /*
+   * Phiên chết giữa chừng — đưa thẳng về màn hình đăng nhập.
+   *
+   * Lớp gọi API bắn sự kiện này khi máy chủ trả 401. Thiếu chỗ lắng nghe thì
+   * giao diện cứ đứng nguyên còn mọi thao tác lặng lẽ hỏng, trông y như treo.
+   */
+  useEffect(() => {
+    const onUnauthorized = () => {
+      setUser(null);
+      setAppState('auth');
+    };
+    window.addEventListener('phien-het-han', onUnauthorized);
+    return () => window.removeEventListener('phien-het-han', onUnauthorized);
   }, []);
 
   // Ảnh đại diện trên thanh trên lấy từ kênh đã kết nối, không dùng ảnh dựng sẵn.
@@ -121,10 +138,16 @@ export default function App() {
   return (
     <ActivePageProvider>
     <div className="flex h-screen w-full bg-background">
-      <Sidebar onLogout={handleLogout} />
+      <Sidebar onLogout={handleLogout} laQuanTri={user?.role === 'admin'} />
       <div className="flex-1 ml-72 flex flex-col h-screen relative">
         <TopNavBar user={user} avatarUrl={avatarUrl} />
         <main className="flex-1 overflow-y-auto custom-scrollbar pt-16">
+          {/*
+            Lỗi ở MỘT màn hình không được kéo đổ cả ứng dụng thành màn hình
+            trắng. Hai nút trong lưới hứng lỗi đều điều hướng lại cả trang, nên
+            chủ shop luôn thoát ra được.
+          */}
+          <ErrorBoundary>
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/inbox" element={<Inbox />} />
@@ -135,9 +158,15 @@ export default function App() {
             <Route path="/telegram" element={<TelegramAlerts />} />
             <Route path="/connections" element={<Connections />} />
             <Route path="/pricing" element={<Pricing />} />
+            {/*
+              Chỉ quản trị mới có đường vào. Đây CHỈ là lớp che mắt — máy chủ
+              vẫn kiểm lại vai trò từ database ở mọi lời gọi.
+            */}
+            {user?.role === 'admin' && <Route path="/admin" element={<Admin />} />}
             <Route path="/analytics" element={<Analytics />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          </ErrorBoundary>
         </main>
       </div>
     </div>

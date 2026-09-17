@@ -24,9 +24,19 @@ export const DEFAULT_MODELS: Record<AiTask, string> = {
   analytics: "anthropic/claude-sonnet-5",
 };
 
+/**
+ * Một mẩu nội dung trong tin nhắn gửi cho AI.
+ *
+ * Có kiểu này thì gửi kèm ảnh được. OpenRouter nhận đúng hình dạng của
+ * OpenAI: content là chuỗi, hoặc là mảng gồm các mẩu chữ và ảnh.
+ */
+export type ChatContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: string | ChatContentPart[];
 }
 
 export interface AiUsage {

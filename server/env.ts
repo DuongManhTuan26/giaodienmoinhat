@@ -45,6 +45,28 @@ export const env = {
     apiKey: optional("OPENROUTER_API_KEY"),
   },
 
+  /**
+   * Bot Telegram CHUNG của nền tảng.
+   *
+   * Khách hàng không phải tự tạo bot: họ bấm một liên kết, mở bot này, bấm
+   * Start, và hệ thống tự lấy chat id của họ. Bắt mỗi shop tự tạo bot rồi tự
+   * tra chat id là rào cản mà phần lớn chủ shop không vượt qua được.
+   */
+  telegram: {
+    botToken: optional("TELEGRAM_BOT_TOKEN"),
+    botUsername: optional("TELEGRAM_BOT_USERNAME"),
+    /*
+     * Chỉ MỘT tiến trình được phép nhận lệnh /start.
+     *
+     * Telegram từ chối khi có hai nơi cùng gọi getUpdates:
+     *   "Conflict: terminated by other getUpdates request"
+     * Trên máy chủ thật, chạy nhiều bản hoặc triển khai chồng lấn là chuyện
+     * thường, và khi đó việc liên kết Telegram hỏng câm lặng. Đặt
+     * TELEGRAM_POLLING=false ở mọi bản trừ một bản duy nhất.
+     */
+    polling: optional("TELEGRAM_POLLING", "true") !== "false",
+  },
+
   sessionSecret: required("SESSION_SECRET"),
 } as const;
 
@@ -54,6 +76,11 @@ export function missingOptionalConfig(): string[] {
   if (!env.openrouter.apiKey) {
     missing.push(
       "OPENROUTER_API_KEY — các tính năng AI sẽ trả lỗi cho tới khi được điền"
+    );
+  }
+  if (!env.telegram.botToken) {
+    missing.push(
+      "TELEGRAM_BOT_TOKEN — khách sẽ phải tự tạo bot riêng thay vì bấm một lần"
     );
   }
   if (!env.zernio.webhookSecret) {

@@ -26,7 +26,7 @@ export class AdsError extends Error {
 async function request<T>(
   path: string,
   options: {
-    method?: "GET" | "POST" | "PATCH" | "DELETE";
+    method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
     query?: Record<string, string | number | undefined>;
     body?: unknown;
   } = {}
@@ -176,6 +176,85 @@ export async function duplicateCampaign(params: {
   });
 }
 
+
+/**
+ * Sửa ngân sách chiến dịch — qua Zernio, không đẩy chủ shop sang Meta.
+ *
+ * Trước đây nút "Sửa ngân sách" mở thẳng Trình quản lý quảng cáo của Facebook.
+ * Sai hai lần: chủ shop phải học một công cụ khác, và đó đúng là thứ mà mình
+ * trả tiền cho Zernio để khỏi phải đụng tới.
+ *
+ * Ngân sách nằm ở hai tầng, và Meta chỉ cho đặt ở MỘT trong hai:
+ *   - CBO: ngân sách ở tầng chiến dịch  -> sửa bằng hàm này.
+ *   - ABO: ngân sách ở tầng nhóm quảng cáo -> Zernio trả 409 và phải sửa
+ *     bằng updateAdSetBudget.
+ * Nên lỗi 409 ở đây không phải hỏng hóc, mà là câu trả lời "ngân sách của
+ * chiến dịch này nằm ở tầng dưới".
+ */
+export async function updateCampaignBudget(params: {
+  campaignId: string;
+  platform: string;
+  amount: number;
+  budgetType: "daily" | "lifetime";
+  /**
+   * Bắt buộc với chiến dịch CHƯA CÓ quảng cáo nào — trường hợp rất hay gặp khi
+   * Meta từ chối mẫu quảng cáo sau lúc chiến dịch đã được tạo. Thiếu nó thì
+   * Zernio trả 404 "Campaign not found" dù chiến dịch có thật. Với chiến dịch
+   * bình thường thì Zernio bỏ qua trường này, nên cứ gửi kèm cho chắc.
+   */
+  accountId?: string;
+}): Promise<unknown> {
+  return request(`/ads/campaigns/${encodeURIComponent(params.campaignId)}`, {
+    method: "PUT",
+    body: {
+      platform: params.platform,
+      budget: { amount: params.amount, type: params.budgetType },
+      ...(params.accountId ? { accountId: params.accountId } : {}),
+    },
+  });
+}
+
+/** Sửa ngân sách ở tầng nhóm quảng cáo (chiến dịch dùng ABO). */
+/**
+ * Đọc một nhóm quảng cáo.
+ *
+ * Có accountId trong truy vấn nên Zernio tự ràng buộc theo tài khoản của shop:
+ * đây là cách duy nhất đối chiếu được "nhóm này có thuộc về shop đang đăng nhập
+ * không" trước khi đổi ngân sách. Bản PUT không nhận accountId, mà khoá API là
+ * khoá dùng chung của cả nền tảng — nên nếu không tự đối chiếu thì không có gì
+ * ngăn shop này sửa ngân sách của shop khác.
+ */
+export async function getAdSet(params: {
+  adSetId: string;
+  accountId: string;
+}): Promise<Record<string, unknown>> {
+  const data = await request<Record<string, unknown>>(
+    `/ads/ad-sets/${encodeURIComponent(params.adSetId)}`,
+    { query: { accountId: params.accountId } }
+  );
+  return (data.adSet as Record<string, unknown>) ?? data;
+}
+
+export async function updateAdSetBudget(params: {
+  adSetId: string;
+  amount: number;
+  budgetType: "daily" | "lifetime";
+  /**
+   * BẮT BUỘC theo đặc tả Zernio. Tài liệu ghi thẳng lý do: "platform campaign
+   * IDs are not globally unique". Bản trước không gửi trường này nên lời gọi
+   * không bao giờ thành công.
+   */
+  platform: string;
+}): Promise<unknown> {
+  return request(`/ads/ad-sets/${encodeURIComponent(params.adSetId)}`, {
+    method: "PUT",
+    body: {
+      platform: params.platform,
+      budget: { amount: params.amount, type: params.budgetType },
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Số liệu
 // ---------------------------------------------------------------------------
@@ -241,6 +320,35 @@ export async function createAudience(params: {
       subtype: params.subtype,
       ...(params.description ? { description: params.description } : {}),
       ...(params.extra ?? {}),
+    },
+  });
+}
+
+/**
+ * Đổi tên và mô tả một tệp đối tượng.
+ *
+ * Trước đây giao diện không sửa được gì, chỉ có một nút mở sang Trình quản lý
+ * quảng cáo của Facebook — trong khi cả sản phẩm hứa "không cần mở trình quản
+ * lý quảng cáo riêng". Đẩy chủ shop sang đó là tự phá lời hứa của chính mình.
+ *
+ * Giới hạn có thật, không giấu: tệp tải lên / theo website / tương đồng thì
+ * QUY TẮC là bất biến, chỉ đổi được tên và mô tả. Riêng tệp nhắm chọn sẵn
+ * (saved_targeting) mới thay được cả cấu hình nhắm.
+ */
+export async function updateAudience(params: {
+  accountId: string;
+  audienceId: string;
+  name?: string;
+  description?: string;
+  spec?: Record<string, unknown>;
+}): Promise<unknown> {
+  return request(`/ads/audiences/${encodeURIComponent(params.audienceId)}`, {
+    method: "PUT",
+    query: { accountId: params.accountId },
+    body: {
+      ...(params.name !== undefined ? { name: params.name } : {}),
+      ...(params.description !== undefined ? { description: params.description } : {}),
+      ...(params.spec !== undefined ? { spec: params.spec } : {}),
     },
   });
 }

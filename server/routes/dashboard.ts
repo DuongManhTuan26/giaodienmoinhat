@@ -100,19 +100,32 @@ dashboardRouter.get(
       orders: number;
       customers: number;
     }>(
+      /*
+       * Gom theo NGÀY GIỜ VIỆT NAM, không theo ngày của database.
+       *
+       * Database chạy GMT, nên date_trunc('day', ...) cắt ngày lúc 7 giờ sáng
+       * giờ Việt Nam. Đã đo: đơn khách đặt lúc 02:00 ngày 13 bị xếp vào cột
+       * ngày 12. Chủ shop nhìn biểu đồ thấy hôm nay ít đơn, hôm qua nhiều đơn
+       * — sai với cả hai ngày.
+       *
+       * AT TIME ZONE đổi sang giờ Việt Nam trước rồi mới cắt ngày.
+       */
       `SELECT to_char(d.day, 'YYYY-MM-DD') AS day,
               (SELECT COUNT(*) FROM messages m
-                WHERE m.user_id = $1 AND date_trunc('day', m.sent_at) = d.day)::int      AS messages,
+                WHERE m.user_id = $1
+                  AND date_trunc('day', m.sent_at AT TIME ZONE 'Asia/Ho_Chi_Minh') = d.day)::int  AS messages,
               (SELECT COUNT(*) FROM messages m
                 WHERE m.user_id = $1 AND m.sender_type = 'ai'
-                  AND date_trunc('day', m.sent_at) = d.day)::int                          AS ai_messages,
+                  AND date_trunc('day', m.sent_at AT TIME ZONE 'Asia/Ho_Chi_Minh') = d.day)::int  AS ai_messages,
               (SELECT COUNT(*) FROM orders o
-                WHERE o.user_id = $1 AND date_trunc('day', o.created_at) = d.day)::int    AS orders,
+                WHERE o.user_id = $1
+                  AND date_trunc('day', o.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh') = d.day)::int AS orders,
               (SELECT COUNT(*) FROM customers c
-                WHERE c.user_id = $1 AND date_trunc('day', c.first_seen_at) = d.day)::int AS customers
+                WHERE c.user_id = $1
+                  AND date_trunc('day', c.first_seen_at AT TIME ZONE 'Asia/Ho_Chi_Minh') = d.day)::int AS customers
          FROM generate_series(
-                date_trunc('day', now()) - interval '6 days',
-                date_trunc('day', now()),
+                date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh') - interval '6 days',
+                date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh'),
                 interval '1 day'
               ) AS d(day)
         ORDER BY d.day`,
@@ -212,17 +225,19 @@ dashboardRouter.get(
     // generate_series đảm bảo ngày không có đơn vẫn hiện số 0,
     // nếu không biểu đồ sẽ nhảy cóc và gây hiểu nhầm.
     const rows = await query(
+      // Ngày theo giờ Việt Nam — xem giải thích ở truy vấn sparklines phía trên.
       `SELECT to_char(d.day, 'DD/MM')                      AS label,
               COALESCE(COUNT(o.id), 0)::int                AS orders,
               COALESCE(SUM(o.total) FILTER (WHERE o.status <> 'cancelled'), 0) AS revenue
          FROM generate_series(
-                date_trunc('day', now()) - (($1::int - 1) || ' days')::interval,
-                date_trunc('day', now()),
+                date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh')
+                  - (($1::int - 1) || ' days')::interval,
+                date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh'),
                 interval '1 day'
               ) AS d(day)
          LEFT JOIN orders o
                 ON o.user_id = $2
-               AND date_trunc('day', o.created_at) = d.day
+               AND date_trunc('day', o.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh') = d.day
         GROUP BY d.day
         ORDER BY d.day`,
       [days, req.user!.id]

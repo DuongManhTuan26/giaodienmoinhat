@@ -1,5 +1,6 @@
 import { query, queryOne } from "../db.js";
 import { AppError } from "../http.js";
+import { boMarkdown } from "./text.js";
 import * as zernio from "./zernio.js";
 import {
   checkOutbound,
@@ -28,6 +29,18 @@ export interface SendResult {
   /** Lý do bị chặn, nếu không gửi được. */
   blockReason?: string;
   blockMessage?: string;
+  /**
+   * Có đáng thử lại không.
+   *
+   * Phân biệt hai loại thất bại khác hẳn nhau:
+   *   - Tạm thời (hết giờ chờ, lỗi mạng, 429, 5xx): thử lại có cơ hội thành công.
+   *   - Dứt khoát (4xx như sai id hội thoại, thiếu quyền): thử lại bao nhiêu lần
+   *     cũng hỏng y như vậy, phải gọi người thật.
+   *
+   * Quan trọng hơn: chỉ được thử lại khi tin gần như chắc chắn CHƯA tới nơi.
+   * Gửi trùng một tin cho khách là mẫu hành vi Meta gắn cờ bot.
+   */
+  retryable?: boolean;
 }
 
 /**
@@ -112,8 +125,17 @@ export async function sendMessageSafely(params: {
    * đối với trợ lý tự động.
    */
   let text = params.text;
+  /*
+   * Gỡ markdown ở đây — chốt chặn cuối trước khi chữ rời hệ thống.
+   *
+   * Mọi tin nhắn gửi khách đều đi qua hàm này, nên đặt ở đây là không đường nào
+   * lọt. Dặn trong lời nhắc vẫn cần, nhưng lời nhắc chỉ là lời khuyên: model
+   * quên lúc nào không ai biết, còn khách thì đọc thấy nguyên dấu sao.
+   */
+  text = boMarkdown(text);
+
   if (decision.needsDisclosure && decision.disclosureText) {
-    text = `${decision.disclosureText}\n\n${params.text}`;
+    text = `${decision.disclosureText}\n\n${text}`;
   }
 
   const attemptId = await recordAttempt({
@@ -167,12 +189,25 @@ export async function sendMessageSafely(params: {
 
     if (params.throwOnBlock) throw error;
 
+    /*
+     * 429 và 5xx: Zernio/Facebook từ chối xử lý, tin chắc chắn chưa đi.
+     * status 0: không gọi được tới nơi (mạng, hết giờ chờ) — tin RẤT có thể
+     *   chưa đi, và nếu lỡ đã đi thì tầng chống lặp sẽ thấy tin của AI trong
+     *   lịch sử ở lượt thử sau mà dừng lại.
+     * 4xx còn lại: sai dứt khoát, thử lại vô ích.
+     */
+    const retryable =
+      error instanceof zernio.ZernioError
+        ? error.status === 0 || error.status === 429 || error.status >= 500
+        : true;
+
     return {
       sent: false,
       text,
       externalId: null,
       blockReason: "send_failed",
       blockMessage: message,
+      retryable,
     };
   }
 }
