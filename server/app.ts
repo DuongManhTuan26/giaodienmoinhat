@@ -29,6 +29,15 @@ export async function createApp() {
 
   app.use(express.json({ limit: "2mb" }));
   app.use(cookieParser());
+  /*
+   * Tin header proxy để lấy đúng IP của khách.
+   *
+   * Chạy sau Cloudflare, Render hay Nginx thì req.ip là IP của proxy chứ không
+   * phải của người gọi. Không đặt cái này là bộ chặn dò mật khẩu đếm nhầm mọi
+   * người vào chung một IP — chặn oan cả hệ thống, mà kẻ dò thì vẫn thoải mái.
+   */
+  app.set("trust proxy", true);
+
   app.use(attachUser);
 
   app.get("/api/health", (_req, res) => {

@@ -71,11 +71,44 @@ export async function docChuTuAnh(params: {
  * tự tải được. Link này HẾT HẠN theo lịch của nền tảng nên phải đọc ngay lúc
  * tin về, không để dành.
  */
+/**
+ * Máy chủ được phép đưa cho AI xem ảnh.
+ *
+ * Đo trên dữ liệu thật: mọi tệp khách gửi tới nay đều từ scontent.xx.fbcdn.net.
+ * Instagram và kho tạm của nhà cung cấp cũng liệt kê sẵn để không chặn nhầm.
+ *
+ * Vì sao phải giới hạn: địa chỉ tệp đi kèm tin nhắn, mà nội dung tệp thì được
+ * đọc thành chữ rồi ghép vào bản ghi hội thoại gửi cho AI bán hàng. Nhận mọi
+ * địa chỉ nghĩa là bất kỳ ai cũng trỏ được máy chủ tới một trang bất kỳ, rồi
+ * dùng chữ trên trang đó nói chuyện với AI của shop.
+ */
+const MAY_CHU_ANH = [
+  ".fbcdn.net",
+  ".cdninstagram.com",
+  "lookaside.fbsbx.com",
+  "media.zernio.com",
+];
+
+export function laNguonAnhCuaNenTang(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "https:") return false;
+    return MAY_CHU_ANH.some((h) => (h.startsWith(".") ? u.hostname.endsWith(h) : u.hostname === h));
+  } catch {
+    return false;
+  }
+}
+
 export async function docTepKhachGui(params: {
   url: string;
   type: string;
 }): Promise<string> {
-  if (!/^https?:\/\//i.test(params.url)) return "";
+  if (!laNguonAnhCuaNenTang(params.url)) {
+    console.warn(
+      `[đọc ảnh] Bỏ qua tệp không đến từ kho ảnh của nền tảng: ${params.url.slice(0, 80)}`
+    );
+    return "";
+  }
 
   const kieu = params.type.toLowerCase();
   if (!kieu.includes("image") && kieu !== "photo") {

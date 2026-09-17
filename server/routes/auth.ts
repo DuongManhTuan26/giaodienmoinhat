@@ -39,11 +39,65 @@ authRouter.post(
   })
 );
 
+/*
+ * Chặn dò mật khẩu.
+ *
+ * Trước đây trang đăng nhập đi thẳng một mạch: tra tài khoản, so mật khẩu, tạo
+ * phiên. Không bộ đếm, không khoá tạm — bắn bao nhiêu lần cũng được.
+ *
+ * Đếm theo CẢ HAI chiều:
+ *   - theo email: chặn dò mật khẩu của một tài khoản cụ thể
+ *   - theo IP: chặn rải một mật khẩu phổ biến lên hàng loạt tài khoản, kiểu
+ *     tấn công mà đếm theo email không bao giờ thấy
+ *
+ * Chỉ ghi lần SAI. Đăng nhập đúng thì xoá sạch lịch sử sai của email đó.
+ */
+const CUA_SO_PHUT = 15;
+/** Cùng một người, dò cùng một tài khoản. Ngưỡng chặt nhất. */
+const TOI_DA_CUNG_CAP = 5;
+/** Một người rải mật khẩu lên nhiều tài khoản khác nhau. */
+const TOI_DA_THEO_IP = 20;
+/**
+ * Một tài khoản bị dò từ rất nhiều nơi.
+ *
+ * Để cao có chủ đích. Nếu chặn theo email từ ngưỡng thấp thì BẤT KỲ AI cũng
+ * khoá được tài khoản của người khác chỉ bằng cách gõ sai 5 lần — đổi một lỗ
+ * hổng lấy một lỗ hổng khác. Ngưỡng này chỉ để cản tấn công rải từ nhiều máy.
+ */
+const TOI_DA_THEO_EMAIL = 50;
+
+async function kiemTraChanDo(email: string, ip: string): Promise<void> {
+  const dem = await queryOne<{ cung_cap: number; theo_ip: number; theo_email: number }>(
+    `SELECT
+       COUNT(*) FILTER (WHERE lower(email) = $1 AND ip = $2 AND $2 <> '')::int AS cung_cap,
+       COUNT(*) FILTER (WHERE ip = $2 AND $2 <> '')::int                      AS theo_ip,
+       COUNT(*) FILTER (WHERE lower(email) = $1)::int                         AS theo_email
+     FROM login_attempts
+    WHERE created_at > now() - ($3 || ' minutes')::interval`,
+    [email, ip, String(CUA_SO_PHUT)]
+  );
+
+  const qua =
+    (dem?.cung_cap ?? 0) >= TOI_DA_CUNG_CAP ||
+    (dem?.theo_ip ?? 0) >= TOI_DA_THEO_IP ||
+    (dem?.theo_email ?? 0) >= TOI_DA_THEO_EMAIL;
+  if (!qua) return;
+
+  throw new AppError(
+    `Sai quá nhiều lần. Vui lòng thử lại sau ${CUA_SO_PHUT} phút, ` +
+      "hoặc liên hệ quản trị để được cấp lại mật khẩu.",
+    429
+  );
+}
+
 authRouter.post(
   "/login",
   route(async (req, res) => {
     const email = requireString(req.body, "email", "email").toLowerCase();
     const password = requireString(req.body, "password", "mật khẩu");
+    const ip = req.ip ?? "";
+
+    await kiemTraChanDo(email, ip);
 
     const user = await queryOne<{
       id: number;
@@ -61,8 +115,23 @@ authRouter.post(
     // email nào đã tồn tại trong hệ thống.
     const invalid = new AppError("Email hoặc mật khẩu không đúng", 401);
 
-    if (!user || !user.is_active) throw invalid;
-    if (!(await verifyPassword(password, user.password_hash))) throw invalid;
+    /*
+     * Ghi lần sai TRƯỚC khi ném lỗi, cho cả hai trường hợp.
+     *
+     * Email không tồn tại cũng phải ghi: không ghi thì kẻ dò cứ đổi email là
+     * bộ đếm theo IP không bao giờ tăng.
+     */
+    if (!user || !user.is_active || !(await verifyPassword(password, user.password_hash))) {
+      await query("INSERT INTO login_attempts (email, ip) VALUES ($1, $2)", [email, ip]).catch(
+        () => {
+          /* Ghi hỏng thì vẫn phải từ chối đăng nhập, không được cho qua. */
+        }
+      );
+      throw invalid;
+    }
+
+    // Đúng mật khẩu thì xoá sạch lịch sử sai, để lần sau gõ nhầm không bị chặn oan.
+    await query("DELETE FROM login_attempts WHERE lower(email) = $1", [email]).catch(() => {});
 
     await createSession(res, user.id);
     res.json({

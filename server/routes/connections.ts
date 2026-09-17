@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { Router } from "express";
 import { query, queryOne } from "../db.js";
 import { requireAuth } from "../auth.js";
@@ -192,18 +193,30 @@ connectionsPublicRouter.get(
      * sẽ nhìn thấy một cục JSON báo lỗi đăng nhập giữa cửa sổ bật lên — ngõ cụt
      * hoàn toàn. Đã dựng lại và thấy đúng như vậy.
      *
-     * Nên nhận diện bằng profileId, thứ luôn có trong đường dẫn quay về. Rủi ro
-     * bị cắm dữ liệu giả được chặn ở chặng sau: hai đường dẫn chọn Trang đều
-     * đối chiếu hồ sơ của người đang đăng nhập trước khi làm gì.
+     * Nhận diện bằng MÃ BÍ MẬT sinh lúc bấm kết nối, không bằng profileId.
+     *
+     * (Trước đây chỗ này nhận diện bằng profileId vì nó luôn có sẵn trong
+     * đường dẫn quay về. Sai: profileId nằm công khai, ai đọc được là dựng
+     * được một đường quay về giả và ghi đè phiên cấp quyền đang dở của shop
+     * khác.) Mã bí mật thì ngẫu nhiên 24 byte, chỉ sống 15 phút, mỗi lượt
+     * một mã, và chỉ chủ shop bấm kết nối mới có.
      */
-    const owner = await queryOne<{ id: number }>(
-      "SELECT id FROM users WHERE profile_ref = $1",
-      [q.profileId]
-    );
+    const maBiMat = typeof req.query.state === "string" ? req.query.state : "";
+    const owner = maBiMat
+      ? await queryOne<{ user_id: number }>(
+          `SELECT user_id FROM pending_connections
+            WHERE connect_state = $1 AND expires_at > now()`,
+          [maBiMat]
+        )
+      : null;
 
     if (!owner) {
+      console.warn("[cấp quyền] Đường quay về thiếu mã hợp lệ hoặc mã đã hết hạn.");
       res.redirect(
-        backToApp({ ok: false, message: "Không tìm thấy gian hàng ứng với phiên cấp quyền này." })
+        backToApp({
+          ok: false,
+          message: "Phiên cấp quyền không hợp lệ hoặc đã hết hạn. Vui lòng bấm kết nối lại.",
+        })
       );
       return;
     }
@@ -223,7 +236,7 @@ connectionsPublicRouter.get(
          created_at    = now(),
          expires_at    = now() + interval '15 minutes'`,
       [
-        owner.id,
+        owner.user_id,
         q.platform ?? "facebook",
         q.profileId,
         q.tempToken,
@@ -425,9 +438,29 @@ connectionsRouter.post(
      *   2. Cửa sổ cấp quyền không bao giờ quay lại app, nên màn hình kết nối
      *      treo vô tận — đúng lỗi chủ shop đã gặp.
      */
+    /*
+     * Mã bí mật cho đúng lượt cấp quyền này.
+     *
+     * Đường quay về trước đây nhận diện chủ shop chỉ bằng profileId — thứ không
+     * phải bí mật. Ai biết profileId của shop khác là ghi đè được phiên cấp
+     * quyền đang dở của họ.
+     *
+     * Ghi mã TRƯỚC khi đưa khách đi, để lúc quay về còn có cái mà đối chiếu.
+     */
+    const maBiMat = crypto.randomBytes(24).toString("base64url");
+    await query(
+      `INSERT INTO pending_connections (user_id, connect_state, created_at, expires_at)
+       VALUES ($1, $2, now(), now() + interval '15 minutes')
+       ON CONFLICT (user_id) DO UPDATE SET
+         connect_state = EXCLUDED.connect_state,
+         created_at    = now(),
+         expires_at    = now() + interval '15 minutes'`,
+      [req.user!.id, maBiMat]
+    );
+
     const url = await zernio.getConnectUrl(channel.platformKey, profileId, {
       headless: true,
-      redirectUrl: `${env.appUrl}/api/connections/oauth/callback`,
+      redirectUrl: `${env.appUrl}/api/connections/oauth/callback?state=${maBiMat}`,
     });
     res.json({ success: true, url });
   })
