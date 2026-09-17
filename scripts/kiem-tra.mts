@@ -1857,6 +1857,29 @@ kiem("trang quảng cáo", "ô chọn kỳ có nối thật và nạp lại theo
     /api\.ads\.overview\(ky\)/.test(maQC) && /\}, \[ky\]\);/.test(maQC), true);
 
 // ---------------------------------------------------------------------------
+// 43. Xoá tài khoản không được để lại rác
+//
+// Đã dọn thật: hai hồ sơ thử nghiệm bên nhà cung cấp và một khách thử trong
+// database còn sót sau khi tài khoản thử đã bị xoá. Rác kiểu này càng để lâu
+// càng khó biết cái nào bỏ được cái nào không.
+//
+// Chốt chặn đúng chỗ là ở lược đồ: mọi bảng gắn với shop phải tự xoá theo khi
+// tài khoản bị xoá. Thiếu một chỗ là dữ liệu shop cũ nằm lại vĩnh viễn, không
+// ai còn biết nó của ai.
+// ---------------------------------------------------------------------------
+{
+  const khoaNgoai = [...cauLenhTaoBang.matchAll(
+    /user_id\s+BIGINT[^,]*?REFERENCES\s+users\(id\)([^,]*)/g
+  )];
+  kiem("xoá sạch", "mọi bảng đều khai khoá ngoại tới users",
+    khoaNgoai.length >= 13, true);
+  const thieuCascade = khoaNgoai
+    .filter(([, duoi]) => !/ON DELETE CASCADE/.test(duoi))
+    .map(([toanBo]) => toanBo.slice(0, 40));
+  kiem("xoá sạch", "khoá ngoại nào cũng ON DELETE CASCADE", thieuCascade, []);
+}
+
+// ---------------------------------------------------------------------------
 console.log(`\nĐã kiểm ${tong} điểm.`);
 if (hong === 0) {
   console.log("Tất cả đều đạt.\n");

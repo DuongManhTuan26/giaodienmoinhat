@@ -860,6 +860,12 @@ const DUC: PhepDuc[] = [
     tim: "Chưa đo được",
     thay: "47",
   },
+  {
+    ten: "bỏ ON DELETE CASCADE ở một bảng, để rác lại sau khi xoá tài khoản",
+    tep: "server/migrations/001_initial_schema.sql",
+    tim: "  user_id            BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,",
+    thay: "  user_id            BIGINT      NOT NULL REFERENCES users(id),",
+  },
 ];
 
 function chayKiemTra(): boolean {
