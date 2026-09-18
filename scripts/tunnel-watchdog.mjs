@@ -221,8 +221,28 @@ function startTunnel() {
         return;
       }
 
-      const match = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
-      if (match) ketThuc(resolve, match[0]);
+      /*
+       * Bỏ qua api.trycloudflare.com — ĐÓ KHÔNG PHẢI địa chỉ tunnel.
+       *
+       * cloudflared in ra địa chỉ máy chủ API của Cloudflare trong log khởi
+       * động, TRƯỚC khi in địa chỉ tunnel thật. Mẫu cũ [a-z0-9-]+ khớp luôn
+       * chữ "api", nên script lấy nhầm dòng đầu rồi đem đăng ký với nhà cung
+       * cấp. Hậu quả đã xảy ra thật: mọi webhook gửi vào chỗ chết suốt nhiều
+       * ngày, nhà cung cấp ghi "Delivery suppressed: endpoint has been failing
+       * continuously", 0/100 lần giao thành công. Tin nhắn còn về được nhờ
+       * vòng quét bù 5 phút, còn bình luận thì mất trắng vì không có vòng nào
+       * quét bù cho nó.
+       *
+       * Địa chỉ tunnel thật của quick tunnel luôn có nhiều từ nối bằng gạch
+       * ngang; api.trycloudflare.com thì không. Nhưng thay vì đoán theo hình
+       * dạng, cứ loại thẳng những tên miền con đã biết là không phải tunnel.
+       */
+      const KHONG_PHAI_TUNNEL = new Set(["api", "www", "dash"]);
+      for (const ung of text.matchAll(/https:\/\/([a-z0-9-]+)\.trycloudflare\.com/g)) {
+        if (KHONG_PHAI_TUNNEL.has(ung[1])) continue;
+        ketThuc(resolve, ung[0]);
+        return;
+      }
     };
 
     proc.stdout.on("data", onData);

@@ -270,7 +270,12 @@ export default function Pricing() {
             <span className="bg-surface-container-high px-3 py-1.5 rounded-md font-label-sm text-primary tracking-widest uppercase border border-outline-variant">KIỂM TRA TỰ ĐỘNG HÀNG NGÀY</span>
           </div>
 
-          {/* Status Banners (Showing all 3 for demo as requested) */}
+          {/*
+            * Ba dải trạng thái LOẠI TRỪ NHAU, mỗi lúc chỉ hiện một.
+            *
+            * Chú thích cũ ghi "Showing all 3 for demo" — sai và gây hiểu nhầm:
+            * mã đã có điều kiện theo safetyStatus từ lâu, không hiện cùng lúc.
+            */}
           <div className="flex flex-col gap-3 mb-md">
             {safetyStatus === 'safe' && (
               <div className="bg-[#022c22] border border-[#10b981] rounded-lg p-4 flex items-start md:items-center gap-3">

@@ -1238,6 +1238,63 @@ export async function suggestReply(conversationId: string): Promise<string> {
  *  3. CHƯA CÓ ĐƠN. Chốt xong rồi thì thôi, đừng đuổi theo nữa.
  *  4. CÓ TRẦN SỐ LẦN. Nhắn đuổi người không trả lời là mẫu hành vi Meta gắn cờ.
  */
+/**
+ * Vớt những tin khách đã bị bỏ rơi.
+ *
+ * VÌ SAO CẦN: sửa một lỗi khiến AI im lặng thì chỉ cứu được tin TỪ LÚC SỬA TRỞ
+ * ĐI. Những tin đã bị bỏ trước đó nằm lại vĩnh viễn, vì không có gì kích hoạt
+ * lại chúng — webhook đã xử lý xong và đánh dấu done, hàng đợi rỗng, không ai
+ * quay lại nhìn.
+ *
+ * Đã đo: 13 tin của khách chưa từng được trả lời, tin cũ nhất chờ 82 giờ. Đó
+ * là nạn nhân của lỗi xếp thứ tự tin nhắn theo giờ nền tảng.
+ *
+ * Vòng này quét hội thoại có tin CUỐI CÙNG là của khách mà chưa ai trả lời,
+ * rồi đẩy lại qua đúng đường xử lý bình thường. Không viết đường thứ hai:
+ * handleIncomingMessage đã mang đủ mọi chốt chặn (tự chủ, cửa sổ 24 giờ, hạn
+ * mức, chống vòng lặp), nên gọi lại nó là an toàn.
+ *
+ * Chờ 3 phút mới vớt, để đường bình thường có cơ hội làm việc trước và không
+ * giẫm chân nhau.
+ */
+const CHO_TRUOC_KHI_VOT_MS = 3 * 60_000;
+const VOT_MOI_LUOT = 20;
+
+export async function runDueBoSot(): Promise<number> {
+  const ungVien = await query<{ id: string }>(
+    `SELECT c.id
+       FROM conversations c
+       JOIN LATERAL (
+         SELECT sender_type, created_at
+           FROM messages
+          WHERE conversation_id = c.id
+          ORDER BY created_at DESC
+          LIMIT 1
+       ) cuoi ON TRUE
+      WHERE c.status = 'ai'
+        AND c.ai_enabled IS DISTINCT FROM FALSE
+        AND cuoi.sender_type = 'customer'
+        AND cuoi.created_at < now() - ($1 || ' milliseconds')::interval
+        AND c.last_customer_message_at > now() - interval '24 hours'
+      ORDER BY cuoi.created_at
+      LIMIT $2`,
+    [String(CHO_TRUOC_KHI_VOT_MS), VOT_MOI_LUOT]
+  );
+
+  let daVot = 0;
+  for (const hc of ungVien.rows) {
+    try {
+      if (await handleIncomingMessage(hc.id)) daVot += 1;
+    } catch (error) {
+      console.error(
+        `[vớt tin bỏ sót] Hội thoại ${hc.id} không xử lý được:`,
+        error instanceof Error ? error.message : error
+      );
+    }
+  }
+  return daVot;
+}
+
 export async function runDueFollowUps(): Promise<number> {
   const shops = await query<{ user_id: number; settings: Record<string, unknown> }>(
     `SELECT user_id, settings FROM ai_configs

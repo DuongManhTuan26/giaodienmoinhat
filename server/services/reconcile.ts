@@ -51,11 +51,98 @@ const HAN_MUC_TOI_THIEU = 20;
 interface KetQua {
   daQuet: number;
   tinMoi: number;
+  /** Bình luận vớt được nhờ quét bù, tức là webhook đã không đưa nó vào. */
+  binhLuanMoi: number;
   boQua: string | null;
 }
 
+/**
+ * Quét bù BÌNH LUẬN.
+ *
+ * Vòng rà soát cũ chỉ quét hội thoại. Nên khi đường webhook chết thì tin nhắn
+ * vẫn về (chậm 5 phút) còn bình luận MẤT TRẮNG — không có đường nào khác đưa
+ * nó vào. Đã xảy ra thật suốt nhiều ngày mà không ai hay: nhà cung cấp gửi 10
+ * lần comment.received, cả 10 đều hỏng vì địa chỉ webhook đăng ký nhầm.
+ *
+ * Hai lớp phải cùng che một thứ, nếu không thì lớp nào hỏng là thủng đúng chỗ
+ * đó. Bình luận đã có trong database rồi thì bỏ qua, nên chạy lại bao nhiêu
+ * lần cũng không nhân đôi.
+ */
+async function raSoatBinhLuan(account: {
+  id: string;
+  user_id: number;
+}): Promise<number> {
+  let them = 0;
+
+  let bai: zernio.BaiCoBinhLuan[];
+  try {
+    bai = await zernio.layBaiCoBinhLuan({ accountId: account.id, limit: 25 });
+  } catch (error) {
+    console.error(
+      `[rà soát bình luận] Không đọc được danh sách bài của ${account.id}:`,
+      error instanceof Error ? error.message : error
+    );
+    return 0;
+  }
+
+  for (const b of bai) {
+    if (!b.commentCount || b.commentCount <= 0) continue;
+
+    let dsBinhLuan: zernio.BinhLuanCuaBai[];
+    try {
+      dsBinhLuan = await zernio.layBinhLuanCuaBai({ postId: b.id, accountId: account.id });
+    } catch (error) {
+      console.error(
+        `[rà soát bình luận] Không đọc được bình luận của bài ${b.id}:`,
+        error instanceof Error ? error.message : error
+      );
+      continue;
+    }
+
+    for (const c of dsBinhLuan) {
+      if (!c.id) continue;
+      const daCo = await queryOne("SELECT 1 FROM comments WHERE id = $1", [c.id]);
+      if (daCo) continue;
+
+      /*
+       * Đi qua ĐÚNG đường mà webhook đi, không viết đường nạp thứ hai.
+       *
+       * Hai đường nạp khác nhau là hai bộ luật khác nhau, và sớm muộn chúng
+       * lệch nhau — đúng cái bẫy đã gặp ở chỗ đồng bộ kênh trước đây.
+       */
+      try {
+        await handleWebhookEvent({
+          eventId: `ra-soat:${c.id}`,
+          eventType: "comment.received",
+          accountId: account.id,
+          payload: {
+            comment: {
+              id: c.id,
+              text: c.message ?? "",
+              platformPostId: b.id,
+              parentCommentId: c.parent?.id,
+              isReply: Boolean(c.parent?.id),
+              platform: "facebook",
+              createdAt: c.createdTime,
+              author: { id: c.from?.id, name: c.from?.name },
+            },
+          },
+        });
+        them += 1;
+      } catch (error) {
+        console.error(
+          `[rà soát bình luận] Không nạp được bình luận ${c.id}:`,
+          error instanceof Error ? error.message : error
+        );
+      }
+    }
+  }
+
+  return them;
+}
+
 export async function reconcileInbox(): Promise<KetQua> {
-  const ket: KetQua = { daQuet: 0, tinMoi: 0, boQua: null };
+  const ket: KetQua = { daQuet: 0, tinMoi: 0, binhLuanMoi: 0, boQua: null };
 
   // Còn ít hạn mức thì nhường cho việc trả lời khách.
   const han = zernio.getRateLimitState();
@@ -70,6 +157,15 @@ export async function reconcileInbox(): Promise<KetQua> {
   );
 
   for (const account of accounts.rows) {
+    /*
+     * Quét bù bình luận TRƯỚC hội thoại.
+     *
+     * Bình luận là thứ duy nhất không có đường dự phòng nào khác, nên nếu hạn
+     * mức gọi hết giữa chừng thì phần bị bỏ dở nên là hội thoại — thứ vẫn còn
+     * webhook và vòng sau vớt lại được.
+     */
+    ket.binhLuanMoi += await raSoatBinhLuan(account);
+
     let conversations: zernio.ZernioConversation[];
     try {
       conversations = await zernio.listConversations({ accountId: account.id });

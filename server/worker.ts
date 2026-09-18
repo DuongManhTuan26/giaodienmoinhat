@@ -3,10 +3,11 @@ import { handleWebhookEvent } from "./services/events.js";
 import { runDueCommentActions } from "./services/comment-ai.js";
 import { reconcileInbox } from "./services/reconcile.js";
 import { runDueAutoPilot, runDueAutoPublishes } from "./services/autopilot.js";
-import { runDueFollowUps } from "./services/sales-ai.js";
+import { runDueFollowUps, runDueBoSot } from "./services/sales-ai.js";
 import { runDueAccountSync } from "./services/accounts.js";
 import { runDuePostRecheck } from "./services/post-status.js";
 import { sendTelegramMessage, escapeHtml } from "./services/telegram.js";
+import { layNhatKyWebhook, type LanGiaoWebhook } from "./services/zernio.js";
 
 /**
  * Worker xử lý hàng đợi sự kiện.
@@ -42,6 +43,8 @@ let lanSoatBaiCuoi = 0;
 let lanNhipTimCuoi = 0;
 /** Lần cảnh báo ứ hàng đợi gần nhất của từng shop, để không nhắn dồn dập. */
 const lanBaoUngDong = new Map<number, number>();
+/** Lần gần nhất đã báo webhook chết. Báo mỗi giờ một lần, không réo liên tục. */
+let lanBaoWebhookChet = 0;
 const BATCH_SIZE = 10;
 const MAX_ATTEMPTS = 5;
 
@@ -293,6 +296,16 @@ export function startWorker(): void {
         lanRaSoatCuoi = Date.now();
         try {
           const kq = await coHanGio("rà soát hộp thư", reconcileInbox(), HAN_MOI_VIEC_MS);
+          if (kq.binhLuanMoi > 0) {
+            /*
+             * Bình luận chỉ về được bằng webhook. Vớt được cái nào ở đây nghĩa
+             * là webhook đã KHÔNG đưa nó vào — dấu hiệu đường webhook đang hỏng.
+             */
+            console.warn(
+              `[rà soát] Vớt được ${kq.binhLuanMoi} bình luận webhook không mang về. ` +
+                `Kiểm tra lại đường nhận webhook.`
+            );
+          }
           if (kq.tinMoi > 0) {
             console.log(
               `[rà soát] Tìm thấy ${kq.tinMoi} tin webhook chưa mang về ` +
@@ -348,6 +361,25 @@ export function startWorker(): void {
         try {
           const daNhac = await coHanGio("nhắc khách", runDueFollowUps(), HAN_MOI_VIEC_MS);
           if (daNhac > 0) console.log(`[nhắc lại] Đã nhắc ${daNhac} khách im giữa chừng.`);
+
+          /*
+           * Vớt tin khách đã bị bỏ rơi.
+           *
+           * Sửa một lỗi khiến AI im lặng chỉ cứu được tin từ lúc sửa trở đi.
+           * Tin bị bỏ trước đó nằm lại mãi vì webhook đã đánh dấu done, hàng
+           * đợi rỗng, không gì kích hoạt lại. Đã đo 13 tin như vậy, cũ nhất
+           * chờ 82 giờ.
+           *
+           * Vớt được cái nào cũng đáng ghi lại: nó là dấu hiệu đường bình
+           * thường vừa để lọt việc.
+           */
+          const daVot = await coHanGio("vớt tin bỏ sót", runDueBoSot(), HAN_MOI_VIEC_MS);
+          if (daVot > 0) {
+            console.warn(
+              `[vớt tin bỏ sót] Đã trả lời ${daVot} tin khách bị bỏ rơi. ` +
+                `Đường xử lý bình thường đã để lọt.`
+            );
+          }
         } catch (error) {
           console.error(
             "[nhắc lại] Lỗi khi nhắc khách:",
@@ -420,6 +452,57 @@ export function startWorker(): void {
           );
           const tongCho = ton.rows.reduce((a, r) => a + r.cho, 0);
           console.log(`[worker] Còn sống. Hàng đợi: ${tongCho} sự kiện chờ xử lý.`);
+
+          /*
+           * Hàng đợi rỗng KHÔNG có nghĩa là mọi thứ ổn.
+           *
+           * "Không ai nhắn" và "webhook chết" nhìn từ phía mình giống hệt nhau:
+           * cả hai đều là hàng đợi rỗng. Chốt chặn phía trên chỉ báo khi hàng
+           * đợi Ứ, nên webhook chết thì nó im — đúng điểm mù đã để lọt nhiều
+           * ngày: địa chỉ webhook đăng ký nhầm, 0/100 lần giao thành công, nhà
+           * cung cấp ghi "Delivery suppressed", mà không ai hay.
+           *
+           * Hỏi thẳng nhật ký giao hàng của nhà cung cấp là phân biệt được.
+           */
+          try {
+            const nhatKy: LanGiaoWebhook[] = await coHanGio(
+              "đọc nhật ký webhook",
+              layNhatKyWebhook(30),
+              20_000
+            );
+            const hong = nhatKy.filter((l) => l.status === "failed");
+            if (nhatKy.length > 0 && hong.length === nhatKy.length) {
+              const lyDo = hong[0]?.errorMessage ?? "không rõ";
+              console.error(
+                `[worker] WEBHOOK CHẾT: ${hong.length}/${nhatKy.length} lần giao gần nhất đều hỏng. ` +
+                  `Địa chỉ: ${hong[0]?.url}. Lý do: ${lyDo}`
+              );
+              const baoTruoc = lanBaoWebhookChet;
+              if (Date.now() - baoTruoc >= 60 * 60_000) {
+                lanBaoWebhookChet = Date.now();
+                const shops = await query<{ user_id: number }>(
+                  `SELECT DISTINCT user_id FROM social_accounts WHERE connected = TRUE`
+                );
+                for (const s of shops.rows) {
+                  await sendTelegramMessage(
+                    s.user_id,
+                    "⚠️ <b>TIN NHẮN VÀ BÌNH LUẬN KHÔNG VỀ ĐƯỢC</b>\n\n" +
+                      "Đường nhận tin của hệ thống đang hỏng, nhà cung cấp đã tạm ngừng gửi.\n\n" +
+                      "Tin nhắn vẫn về chậm nhờ vòng quét bù 5 phút, nhưng <b>bình luận thì mất hẳn</b>. " +
+                      "Vào hộp thư trả lời tay giúp khách, và báo kỹ thuật kiểm tra ngay.",
+                    "webhook_dead"
+                  ).catch(() => {
+                    /* Không báo được thì thôi, không để làm dừng vòng lặp. */
+                  });
+                }
+              }
+            }
+          } catch (error) {
+            console.warn(
+              "[worker] Không đọc được nhật ký webhook:",
+              error instanceof Error ? error.message : error
+            );
+          }
 
           for (const r of ton.rows) {
             // Quá 10 phút mà chưa xử lý xong là có gì đó đang hỏng.

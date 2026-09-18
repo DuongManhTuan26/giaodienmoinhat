@@ -571,14 +571,49 @@ export async function sendMessage(params: {
 // Bình luận
 // ---------------------------------------------------------------------------
 
-export async function listComments(params: {
-  accountId?: string;
+/**
+ * Các BÀI ĐĂNG có bình luận — KHÔNG phải danh sách bình luận.
+ *
+ * Tên cũ là listComments và đã làm tôi báo cáo sai một lần: nó trả về bài đăng
+ * kèm commentCount, không trả bình luận. Muốn lấy bình luận thật thì gọi
+ * layBinhLuanCuaBai() với postId lấy từ đây.
+ */
+export interface BaiCoBinhLuan {
+  id: string;
+  accountId: string;
+  content?: string;
+  commentCount?: number;
+  createdTime?: string;
+}
+
+export async function layBaiCoBinhLuan(params: {
+  accountId: string;
   limit?: number;
-} = {}): Promise<ZernioComment[]> {
-  const data = await request<{ data?: ZernioComment[] }>("/inbox/comments", {
+}): Promise<BaiCoBinhLuan[]> {
+  const data = await request<{ data?: BaiCoBinhLuan[] }>("/inbox/comments", {
     query: params,
   });
   return data.data ?? [];
+}
+
+/** Bình luận thật của một bài đăng. */
+export interface BinhLuanCuaBai {
+  id: string;
+  message?: string;
+  createdTime?: string;
+  from?: { id?: string; name?: string };
+  parent?: { id?: string };
+}
+
+export async function layBinhLuanCuaBai(params: {
+  postId: string;
+  accountId: string;
+}): Promise<BinhLuanCuaBai[]> {
+  const data = await request<{ comments?: BinhLuanCuaBai[] }>(
+    `/inbox/comments/${encodeURIComponent(params.postId)}`,
+    { query: { accountId: params.accountId } }
+  );
+  return data.comments ?? [];
 }
 
 /**
@@ -868,12 +903,34 @@ export async function getAnalytics(params: {
 // Kịch bản bình luận → tin nhắn riêng
 // ---------------------------------------------------------------------------
 
-export async function listCommentAutomations(): Promise<Record<string, unknown>[]> {
-  const data = await request<{ automations?: Record<string, unknown>[] }>(
-    "/comment-automations"
-  );
-  return data.automations ?? [];
+/**
+ * Nhật ký giao webhook của nhà cung cấp.
+ *
+ * Đây là cách DUY NHẤT biết webhook có tới được mình không. Hàng đợi rỗng có
+ * thể là "không ai nhắn" mà cũng có thể là "webhook chết" — hai thứ nhìn từ
+ * phía mình giống hệt nhau. Nhật ký này phân biệt được.
+ *
+ * Đã xảy ra thật: địa chỉ webhook đăng ký nhầm thành api.trycloudflare.com,
+ * mọi lần giao đều hỏng suốt nhiều ngày, nhà cung cấp ghi "Delivery suppressed:
+ * endpoint has been failing continuously". Tin nhắn vẫn về nhờ vòng quét bù 5
+ * phút nên nhìn bên ngoài tưởng bình thường, còn bình luận thì mất trắng.
+ */
+export interface LanGiaoWebhook {
+  event: string;
+  status: string;
+  url: string;
+  errorMessage?: string | null;
+  createdAt: string;
 }
+
+export async function layNhatKyWebhook(limit = 50): Promise<LanGiaoWebhook[]> {
+  const data = await request<{ logs?: LanGiaoWebhook[] }>("/webhooks/logs", {
+    query: { limit },
+    retries: 0,
+  });
+  return data.logs ?? [];
+}
+
 
 // ---------------------------------------------------------------------------
 // Webhook

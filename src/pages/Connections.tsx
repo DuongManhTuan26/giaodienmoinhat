@@ -184,6 +184,25 @@ export default function Connections() {
     return 'normal';
   })();
 
+  /*
+   * Các kênh sắp hết hạn, tính từ dữ liệu thật.
+   *
+   * Dải cảnh báo trước đây ghi cứng "Trang Fanpage B sẽ hết hạn sau 5 ngày" —
+   * không có kênh nào tên vậy, và con số 5 cũng là chữ chết. Chủ shop đọc xong
+   * đi tìm một cái Trang không tồn tại.
+   */
+  const ketNoiSapHetHan = accounts
+    .filter((a) => a.token_expires_at)
+    .map((a) => ({
+      ten: a.display_name || a.username,
+      conLaiNgay: Math.max(
+        0,
+        Math.ceil((new Date(a.token_expires_at!).getTime() - Date.now()) / 86400000)
+      ),
+    }))
+    .filter((a) => a.conLaiNgay <= 7)
+    .sort((a, b) => a.conLaiNgay - b.conLaiNgay);
+
   /** Gom tài khoản theo kênh để dựng khối "Tài khoản đã kết nối". */
   const accountsByPlatform: Record<string, SocialAccount[]> = {};
   for (const account of accounts) {
@@ -641,8 +660,12 @@ export default function Connections() {
                 <span className="material-symbols-outlined text-yellow-400 text-[24px]">warning</span>
               </div>
               <div>
-                <h3 className="text-base font-bold text-yellow-400 mb-0.5">Có 1 kết nối sắp hết hạn</h3>
-                <p className="text-sm text-on-surface-variant font-medium">Trang Fanpage B sẽ hết hạn sau 5 ngày. Gia hạn ngay để AI không bị gián đoạn.</p>
+                <h3 className="text-base font-bold text-yellow-400 mb-0.5">{`Có ${ketNoiSapHetHan.length} kết nối sắp hết hạn`}</h3>
+                <p className="text-sm text-on-surface-variant font-medium">
+                  {ketNoiSapHetHan.length === 1
+                    ? `Kênh ${ketNoiSapHetHan[0].ten} sẽ hết hạn sau ${ketNoiSapHetHan[0].conLaiNgay} ngày. Nối lại để AI không bị gián đoạn.`
+                    : `${ketNoiSapHetHan.length} kênh sắp hết hạn. Nối lại để AI không bị gián đoạn.`}
+                </p>
               </div>
             </div>
             <button onClick={handleSync} disabled={syncing} className="shrink-0 px-5 py-2.5 bg-yellow-500 text-[#18181B] font-bold rounded-xl shadow-[0_4px_15px_rgba(234,179,8,0.3)] hover:scale-105 transition-transform whitespace-nowrap disabled:opacity-60 disabled:hover:scale-100">

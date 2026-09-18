@@ -1990,6 +1990,111 @@ kiem("trang quảng cáo", "ô chọn kỳ có nối thật và nạp lại theo
 }
 
 // ---------------------------------------------------------------------------
+// 46. Webhook chết mà không ai hay — gốc rễ của "bình luận không được trả lời"
+//
+// Tìm ra bằng nhật ký giao hàng của nhà cung cấp: 0/100 lần giao thành công,
+// họ ghi "Delivery suppressed: endpoint has been failing continuously".
+//
+// Nguyên nhân: script trông tunnel bóc nhầm địa chỉ. Mẫu [a-z0-9-]+ khớp luôn
+// api.trycloudflare.com — dòng cloudflared in ra trong log khởi động, KHÔNG
+// phải địa chỉ tunnel. Địa chỉ rác đó được đem đăng ký với nhà cung cấp.
+//
+// Hậu quả không đều nhau: tin nhắn vẫn về nhờ vòng quét bù 5 phút, còn bình
+// luận MẤT TRẮNG vì không có vòng nào quét bù cho nó.
+// ---------------------------------------------------------------------------
+{
+  const nguonTunnel = fs.readFileSync(path.join(GOC, "scripts/tunnel-watchdog.mjs"), "utf8");
+  kiem("webhook", "loại địa chỉ không phải tunnel khi bóc",
+    /KHONG_PHAI_TUNNEL = new Set\(\["api", "www", "dash"\]\)/.test(nguonTunnel), true);
+  kiem("webhook", "không lấy đại kết quả khớp đầu tiên",
+    /text\.match\(\/https:\\\/\\\/\[a-z0-9-\]\+\\\.trycloudflare/.test(nguonTunnel), false);
+
+  const nguonWorker = fs.readFileSync(path.join(GOC, "server/worker.ts"), "utf8");
+  kiem("webhook", "worker tự đo sức khoẻ đường webhook",
+    /layNhatKyWebhook\(30\)/.test(nguonWorker), true);
+  kiem("webhook", "mọi lần giao đều hỏng thì báo chủ shop",
+    /hong\.length === nhatKy\.length/.test(nguonWorker) &&
+      /TIN NHẮN VÀ BÌNH LUẬN KHÔNG VỀ ĐƯỢC/.test(nguonWorker), true);
+  kiem("webhook", "không réo liên tục, mỗi giờ một lần",
+    /Date\.now\(\) - baoTruoc >= 60 \* 60_000/.test(nguonWorker), true);
+
+  const nguonRaSoat = fs.readFileSync(path.join(GOC, "server/services/reconcile.ts"), "utf8");
+  kiem("webhook", "vòng quét bù có quét CẢ bình luận",
+    /ket\.binhLuanMoi \+= await raSoatBinhLuan\(account\)/.test(nguonRaSoat), true);
+  kiem("webhook", "quét bù bình luận đi qua đúng đường webhook, không viết đường thứ hai",
+    /await handleWebhookEvent\(\{[\s\S]{0,200}?eventType: "comment\.received"/.test(nguonRaSoat), true);
+  kiem("webhook", "bình luận đã có thì bỏ qua, chạy lại không nhân đôi",
+    /SELECT 1 FROM comments WHERE id = \$1[\s\S]{0,80}?if \(daCo\) continue;/.test(nguonRaSoat), true);
+
+  const nguonNcc = fs.readFileSync(path.join(GOC, "server/services/zernio.ts"), "utf8");
+  kiem("webhook", "phân biệt rõ 'bài có bình luận' với 'bình luận của bài'",
+    /export async function layBaiCoBinhLuan/.test(nguonNcc) &&
+      /export async function layBinhLuanCuaBai/.test(nguonNcc), true);
+  kiem("webhook", "không còn hàm listComments gây hiểu nhầm",
+    /export async function listComments\b/.test(nguonNcc), false);
+}
+
+// --- Vớt tin khách bị bỏ rơi -------------------------------------------------
+//
+// Sửa lỗi khiến AI im lặng chỉ cứu được tin TỪ LÚC SỬA TRỞ ĐI. Tin bị bỏ trước
+// đó nằm lại mãi: webhook đã đánh dấu done, hàng đợi rỗng, không gì kích hoạt
+// lại. Đo được 13 tin như vậy, cũ nhất chờ 82 giờ.
+{
+  const nguonBan = fs.readFileSync(path.join(GOC, "server/services/sales-ai.ts"), "utf8");
+  kiem("vớt tin bỏ sót", "có vòng quét tin khách chưa ai trả lời",
+    /export async function runDueBoSot/.test(nguonBan), true);
+  /*
+   * Chỉ soi THÂN hàm runDueBoSot.
+   *
+   * Bản đầu soi cả tệp, mà chuỗi "cửa sổ 24 giờ" còn nằm ở hàm khác — đục
+   * thủng đúng dòng trong runDueBoSot mà phép kiểm vẫn xanh. Đã đục và nó lọt.
+   */
+  const thanBoSot = nguonBan.slice(
+    nguonBan.indexOf("export async function runDueBoSot"),
+    nguonBan.indexOf("export async function runDueFollowUps")
+  );
+  kiem("vớt tin bỏ sót", "thân hàm tách được ra để soi", thanBoSot.length > 400, true);
+  kiem("vớt tin bỏ sót", "chỉ vớt khi tin CUỐI là của khách",
+    /cuoi\.sender_type = 'customer'/.test(thanBoSot), true);
+  kiem("vớt tin bỏ sót", "TUYỆT ĐỐI không vớt ngoài cửa sổ 24 giờ",
+    /c\.last_customer_message_at > now\(\) - interval '24 hours'/.test(thanBoSot), true);
+  kiem("vớt tin bỏ sót", "chờ một lúc để đường bình thường làm trước",
+    /cuoi\.created_at < now\(\) - \(\$1 \|\| ' milliseconds'\)::interval/.test(thanBoSot), true);
+  kiem("vớt tin bỏ sót", "đi qua đúng đường xử lý chính, không viết đường thứ hai",
+    /if \(await handleIncomingMessage\(hc\.id\)\) daVot \+= 1;/.test(thanBoSot), true);
+  kiem("vớt tin bỏ sót", "không đụng hội thoại nhân viên đang giữ",
+    /WHERE c\.status = 'ai'/.test(thanBoSot), true);
+
+  const nguonWorker2 = fs.readFileSync(path.join(GOC, "server/worker.ts"), "utf8");
+  kiem("vớt tin bỏ sót", "worker có gọi vòng vớt",
+    /runDueBoSot\(\)/.test(nguonWorker2), true);
+}
+
+// --- Migration không được đâm nhau -------------------------------------------
+{
+  const nguonMig = fs.readFileSync(path.join(GOC, "server/migrate.ts"), "utf8");
+  kiem("migration", "có khoá tư vấn quanh việc chạy migration",
+    /pg_advisory_lock\(\$1\)/.test(nguonMig) && /pg_advisory_unlock\(\$1\)/.test(nguonMig), true);
+  kiem("migration", "khoá ở cấp phiên, không phải cấp giao dịch",
+    /pg_advisory_xact_lock/.test(nguonMig), false);
+  kiem("migration", "nhả khoá kể cả khi giữa chừng lỗi",
+    /\} finally \{[\s\S]{0,200}?pg_advisory_unlock/.test(nguonMig), true);
+  const nguonVao = fs.readFileSync(path.join(GOC, "server.ts"), "utf8");
+  kiem("migration", "tự chạy khi khởi động máy chủ",
+    /await runMigrations\(\);/.test(nguonVao), true);
+}
+
+// --- Không còn chữ bịa trên giao diện ----------------------------------------
+{
+  const maKetNoi = boChuThich(fs.readFileSync(path.join(GOC, "src/pages/Connections.tsx"), "utf8"));
+  kiem("nói đúng sự thật", "không còn 'Trang Fanpage B'", /Fanpage B/.test(maKetNoi), false);
+  kiem("nói đúng sự thật", "cảnh báo hết hạn tính từ dữ liệu thật",
+    /const ketNoiSapHetHan = accounts/.test(maKetNoi), true);
+  const maGia = fs.readFileSync(path.join(GOC, "src/pages/Pricing.tsx"), "utf8");
+  kiem("nói đúng sự thật", "không còn chú thích 'for demo'", /for demo as requested/.test(maGia), false);
+}
+
+// ---------------------------------------------------------------------------
 console.log(`\nĐã kiểm ${tong} điểm.`);
 if (hong === 0) {
   console.log("Tất cả đều đạt.\n");

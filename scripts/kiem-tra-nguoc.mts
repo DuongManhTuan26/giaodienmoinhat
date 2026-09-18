@@ -908,6 +908,54 @@ const DUC: PhepDuc[] = [
     tim: '    if (error.code === "PROFILE_LIMIT_EXCEEDED") {',
     thay: "    if (false) {",
   },
+  {
+    ten: "bóc lại địa chỉ tunnel kiểu cũ, lấy nhầm api.trycloudflare.com",
+    tep: "scripts/tunnel-watchdog.mjs",
+    tim: 'const KHONG_PHAI_TUNNEL = new Set(["api", "www", "dash"]);',
+    thay: 'const KHONG_PHAI_TUNNEL = new Set([]);',
+  },
+  {
+    ten: "worker thôi không đo sức khoẻ đường webhook",
+    tep: "server/worker.ts",
+    tim: "layNhatKyWebhook(30)",
+    thay: "Promise.resolve([])",
+  },
+  {
+    ten: "vòng quét bù bỏ luôn phần bình luận",
+    tep: "server/services/reconcile.ts",
+    tim: "    ket.binhLuanMoi += await raSoatBinhLuan(account);",
+    thay: "",
+  },
+  {
+    ten: "quét bù bình luận nạp trùng, không kiểm đã có chưa",
+    tep: "server/services/reconcile.ts",
+    tim: "      if (daCo) continue;",
+    thay: "",
+  },
+  {
+    ten: "vớt tin bỏ sót vượt cửa sổ 24 giờ — vi phạm chính sách nền tảng",
+    tep: "server/services/sales-ai.ts",
+    tim: "        AND c.last_customer_message_at > now() - interval '24 hours'",
+    thay: "",
+  },
+  {
+    ten: "vớt cả hội thoại nhân viên đang giữ",
+    tep: "server/services/sales-ai.ts",
+    tim: "      WHERE c.status = 'ai'\n        AND c.ai_enabled IS DISTINCT FROM FALSE",
+    thay: "      WHERE TRUE",
+  },
+  {
+    ten: "bỏ khoá migration, để hai tiến trình đâm nhau",
+    tep: "server/migrate.ts",
+    tim: '  await khoa.query("SELECT pg_advisory_lock($1)", [KHOA_MIGRATION]);',
+    thay: "",
+  },
+  {
+    ten: "trả lại chữ bịa 'Trang Fanpage B'",
+    tep: "src/pages/Connections.tsx",
+    tim: "{ketNoiSapHetHan.length === 1",
+    thay: "{false ? 'Trang Fanpage B sẽ hết hạn sau 5 ngày' : ketNoiSapHetHan.length === 1",
+  },
 ];
 
 function chayKiemTra(): boolean {

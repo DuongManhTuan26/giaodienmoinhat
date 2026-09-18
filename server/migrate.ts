@@ -54,7 +54,39 @@ function listMigrationFiles(): string[] {
     .sort();
 }
 
+/*
+ * Khoá tư vấn cho việc chạy migration.
+ *
+ * Số bất kỳ nhưng phải cố định: mọi tiến trình dùng chung một số thì mới xếp
+ * hàng được với nhau.
+ */
+const KHOA_MIGRATION = 776_155_001;
+
 export async function runMigrations(): Promise<void> {
+  /*
+   * Chỉ một tiến trình được chạy migration tại một thời điểm.
+   *
+   * Đã xảy ra thật: chạy migration bằng tay trong lúc tsx watch khởi động lại,
+   * hai bên cùng tạo một bảng và Postgres báo "duplicate key value violates
+   * unique constraint pg_type_typname_nsp_index". Lần đó kết thúc may mà đúng,
+   * nhưng nó hoàn toàn có thể để lại lược đồ dở dang.
+   *
+   * Khoá tư vấn ở cấp SESSION (không phải giao dịch) vì mỗi migration chạy
+   * trong giao dịch riêng; khoá theo giao dịch sẽ nhả ra giữa chừng.
+   */
+  const khoa = await pool.connect();
+  await khoa.query("SELECT pg_advisory_lock($1)", [KHOA_MIGRATION]);
+  try {
+    await chayMigrationDaKhoa();
+  } finally {
+    await khoa.query("SELECT pg_advisory_unlock($1)", [KHOA_MIGRATION]).catch(() => {
+      /* Mất kết nối thì Postgres tự nhả khi phiên đóng. */
+    });
+    khoa.release();
+  }
+}
+
+async function chayMigrationDaKhoa(): Promise<void> {
   await ensureMigrationsTable();
 
   const applied = new Set(
