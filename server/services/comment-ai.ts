@@ -266,11 +266,6 @@ export async function handleCommentReceived(event: CommentEvent): Promise<void> 
     return;
   }
 
-  if (content.trim() === "") {
-    await markSkipped(comment.id, "Bình luận không có nội dung chữ");
-    return;
-  }
-
   // Kịch bản đang bật của shop này, ưu tiên kịch bản gắn với đúng kênh.
   const scripts = await query<{
     id: number;
@@ -301,6 +296,31 @@ export async function handleCommentReceived(event: CommentEvent): Promise<void> 
 
   if (scripts.rows.length === 0) {
     await markSkipped(comment.id, "Chưa có kịch bản nào đang bật");
+    return;
+  }
+
+  /*
+   * Bình luận KHÔNG CÓ CHỮ vẫn là khách quan tâm.
+   *
+   * Trước đây chỗ này loại thẳng bình luận rỗng, và loại TRƯỚC cả bước khớp
+   * kịch bản — nên chế độ "Bắt mọi bình luận" không bao giờ bắt được chúng, dù
+   * chữ trên giao diện hứa đúng như vậy. Chính giao diện còn ghi lý do phải có
+   * chế độ bắt tất cả: "rất nhiều khách Việt chỉ bình luận một dấu chấm để
+   * đánh dấu bài, hoặc một biểu tượng cảm xúc".
+   *
+   * Khách thả một nhãn dán hay một tấm ảnh vào bài bán hàng là đang giơ tay.
+   * Bỏ qua họ là bỏ khách.
+   *
+   * Nhưng CHỈ nhận khi shop đã bật chế độ bắt tất cả. Kịch bản từ khoá thì
+   * không có từ nào để khớp với chuỗi rỗng, nên nhận vào cũng vô nghĩa — và
+   * nhắn cho người không hỏi gì chính là hành vi khiến Trang bị gắn cờ.
+   */
+  const coBatTatCa = scripts.rows.some((x) => x.match_type === "all");
+  if (content.trim() === "" && !coBatTatCa) {
+    await markSkipped(
+      comment.id,
+      "Bình luận không có nội dung chữ, mà chưa bật chế độ bắt mọi bình luận"
+    );
     return;
   }
 

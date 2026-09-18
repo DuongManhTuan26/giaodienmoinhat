@@ -2,6 +2,7 @@ import { createApp, logStartupWarnings } from "./server/app.js";
 import { env } from "./server/env.js";
 import { verifyConnection, closePool } from "./server/db.js";
 import { runMigrations } from "./server/migrate.js";
+import { dangKyDiaChiWebhook } from "./server/services/zernio.js";
 import { pruneExpiredSessions } from "./server/auth.js";
 import { startWorker, stopWorker, recoverStuckEvents } from "./server/worker.js";
 import {
@@ -56,6 +57,48 @@ async function main() {
   const server = app.listen(env.port, "0.0.0.0", () => {
     console.log(`[khởi động] Sẵn sàng tại http://localhost:${env.port}`);
   });
+
+  /*
+   * Tự đăng ký địa chỉ webhook của chính mình.
+   *
+   * Chỉ làm khi APP_URL là địa chỉ công khai https. Trên máy lập trình
+   * (localhost) thì bỏ qua — ở đó đường hầm mới là địa chỉ đúng, và
+   * scripts/tunnel-watchdog.mjs lo việc đăng ký.
+   *
+   * Không có bước này thì triển khai lên máy chủ thật là webhook chết ngay:
+   * địa chỉ vẫn trỏ về đường hầm cũ của máy lập trình, mà không ai sửa hộ.
+   * Đã đo hậu quả đúng tình huống đó: 0/100 lần giao thành công.
+   *
+   * Không chờ và không để lỗi làm chết khởi động: webhook hỏng thì hai lớp
+   * quét bù vẫn kéo tin về, còn máy chủ không lên thì hỏng tất.
+   */
+  void (async () => {
+    try {
+      const u = new URL(env.appUrl);
+      const laNoiBo =
+        u.hostname === "localhost" ||
+        u.hostname === "127.0.0.1" ||
+        u.hostname.endsWith(".local");
+      if (u.protocol !== "https:" || laNoiBo) {
+        console.log(
+          `[khởi động] APP_URL là ${env.appUrl} — địa chỉ nội bộ, không tự đăng ký webhook.`
+        );
+        return;
+      }
+      const diaChi = `${env.appUrl.replace(/\/$/, "")}/api/webhooks/zernio`;
+      const kq = await dangKyDiaChiWebhook(diaChi);
+      if (kq.doi) {
+        console.log(`[khởi động] Đã đổi địa chỉ webhook: ${kq.cu} -> ${diaChi}`);
+      } else {
+        console.log(`[khởi động] Địa chỉ webhook đã đúng: ${diaChi}`);
+      }
+    } catch (error) {
+      console.error(
+        "[khởi động] Không đăng ký được địa chỉ webhook:",
+        error instanceof Error ? error.message : error
+      );
+    }
+  })();
 
   startWorker();
 

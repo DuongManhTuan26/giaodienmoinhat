@@ -2095,6 +2095,61 @@ kiem("trang quảng cáo", "ô chọn kỳ có nối thật và nạp lại theo
 }
 
 // ---------------------------------------------------------------------------
+// 47. Tự đăng ký địa chỉ webhook khi khởi động
+//
+// Trước đây CHỈ scripts/tunnel-watchdog.mjs làm việc này, mà script đó chỉ
+// chạy trên máy lập trình. Triển khai lên máy chủ thật thì không ai chạy nó,
+// địa chỉ webhook vẫn trỏ về đường hầm cũ đã chết, và lần này không script nào
+// sửa hộ. Đã đo hậu quả của đúng tình huống đó: 0/100 lần giao thành công.
+// ---------------------------------------------------------------------------
+{
+  const nguonNcc = fs.readFileSync(path.join(GOC, "server/services/zernio.ts"), "utf8");
+  kiem("đăng ký webhook", "có hàm đăng ký địa chỉ webhook",
+    /export async function dangKyDiaChiWebhook/.test(nguonNcc), true);
+  kiem("đăng ký webhook", "giữ nguyên bí mật ký và danh sách sự kiện",
+    /secret: hook\.secret,[\s\S]{0,60}?events: hook\.events,/.test(nguonNcc), true);
+  kiem("đăng ký webhook", "địa chỉ đã đúng thì không gọi cập nhật",
+    /if \(hook\.url === diaChi\) return \{ doi: false/.test(nguonNcc), true);
+
+  const nguonVao = fs.readFileSync(path.join(GOC, "server.ts"), "utf8");
+  kiem("đăng ký webhook", "khởi động có gọi đăng ký",
+    /await dangKyDiaChiWebhook\(diaChi\)/.test(nguonVao), true);
+  kiem("đăng ký webhook", "KHÔNG đăng ký khi chạy trên máy nội bộ",
+    /u\.protocol !== "https:" \|\| laNoiBo/.test(nguonVao), true);
+  kiem("đăng ký webhook", "nhận diện đủ các dạng địa chỉ nội bộ",
+    /localhost/.test(nguonVao) && /127\.0\.0\.1/.test(nguonVao) &&
+      /endsWith\("\.local"\)/.test(nguonVao), true);
+  kiem("đăng ký webhook", "đăng ký hỏng KHÔNG được làm chết khởi động",
+    /void \(async \(\) => \{[\s\S]{0,1400}?catch \(error\)/.test(nguonVao), true);
+}
+
+// --- Bình luận không có chữ vẫn là khách -------------------------------------
+//
+// Giao diện hứa "Bắt mọi bình luận" và còn ghi rõ lý do: "rất nhiều khách Việt
+// chỉ bình luận một dấu chấm để đánh dấu bài, hoặc một biểu tượng cảm xúc".
+// Nhưng mã loại bình luận rỗng TRƯỚC cả bước khớp kịch bản, nên chế độ đó
+// không bao giờ bắt được chúng. Lời hứa và hành vi lệch nhau.
+{
+  const nguonCmt = fs.readFileSync(path.join(GOC, "server/services/comment-ai.ts"), "utf8");
+  kiem("bình luận rỗng", "chỉ nhận khi shop đã bật bắt mọi bình luận",
+    /const coBatTatCa = scripts\.rows\.some\(\(x\) => x\.match_type === "all"\)/.test(nguonCmt) &&
+      /content\.trim\(\) === "" && !coBatTatCa/.test(nguonCmt), true);
+  kiem("bình luận rỗng", "xét SAU khi đã đọc kịch bản, không loại trước",
+    nguonCmt.indexOf("const scripts = await query") <
+      nguonCmt.indexOf('content.trim() === "" && !coBatTatCa'), true);
+  kiem("bình luận rỗng", "lý do bỏ qua nói rõ cách bật",
+    /chưa bật chế độ bắt mọi bình luận/.test(nguonCmt), true);
+  kiem("bình luận rỗng", "kịch bản bắt tất cả vẫn xét SAU CÙNG",
+    /\.\.\.scripts\.rows\.filter\(\(x\) => x\.match_type !== "all"\),\s*\n\s*\.\.\.scripts\.rows\.filter\(\(x\) => x\.match_type === "all"\)/.test(
+      nguonCmt
+    ), true);
+  kiem("bình luận rỗng", "từ khoá loại trừ vẫn chặn được cả chế độ bắt tất cả",
+    /for \(const word of excludeKeywords\)[\s\S]{0,140}?if \(matchType === "all"\) return true;/.test(
+      nguonCmt
+    ), true);
+}
+
+// ---------------------------------------------------------------------------
 console.log(`\nĐã kiểm ${tong} điểm.`);
 if (hong === 0) {
   console.log("Tất cả đều đạt.\n");

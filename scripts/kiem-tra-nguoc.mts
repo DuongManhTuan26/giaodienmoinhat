@@ -956,6 +956,36 @@ const DUC: PhepDuc[] = [
     tim: "{ketNoiSapHetHan.length === 1",
     thay: "{false ? 'Trang Fanpage B sẽ hết hạn sau 5 ngày' : ketNoiSapHetHan.length === 1",
   },
+  {
+    ten: "đăng ký webhook ghi đè cả bí mật ký, làm hỏng xác thực chữ ký",
+    tep: "server/services/zernio.ts",
+    tim: "      secret: hook.secret,",
+    thay: '      secret: "moi-tinh",',
+  },
+  {
+    ten: "tự đăng ký webhook cả khi chạy trên máy nội bộ",
+    tep: "server.ts",
+    tim: 'if (u.protocol !== "https:" || laNoiBo) {',
+    thay: "if (false) {",
+  },
+  {
+    ten: "bỏ bước tự đăng ký địa chỉ webhook khi khởi động",
+    tep: "server.ts",
+    tim: "      const kq = await dangKyDiaChiWebhook(diaChi);",
+    thay: "      const kq = { doi: false, cu: diaChi };",
+  },
+  {
+    ten: "loại bình luận rỗng trước khi xét kịch bản bắt tất cả",
+    tep: "server/services/comment-ai.ts",
+    tim: '  const coBatTatCa = scripts.rows.some((x) => x.match_type === "all");',
+    thay: "  const coBatTatCa = false;",
+  },
+  {
+    ten: "nhận bình luận rỗng cả khi chưa bật bắt tất cả",
+    tep: "server/services/comment-ai.ts",
+    tim: '  if (content.trim() === "" && !coBatTatCa) {',
+    thay: "  if (false) {",
+  },
 ];
 
 function chayKiemTra(): boolean {

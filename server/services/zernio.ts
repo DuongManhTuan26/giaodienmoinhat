@@ -923,6 +923,44 @@ export interface LanGiaoWebhook {
   createdAt: string;
 }
 
+/**
+ * Đăng ký địa chỉ webhook của chính mình.
+ *
+ * VÌ SAO CẦN: trước đây chỉ có scripts/tunnel-watchdog.mjs làm việc này, mà
+ * script đó chỉ chạy trên máy lập trình. Triển khai lên máy chủ thật thì không
+ * ai chạy nó, nên địa chỉ webhook vẫn trỏ về đường hầm cũ đã chết — và lần này
+ * không có script nào sửa hộ. Đã đo hậu quả của đúng tình huống đó: 0/100 lần
+ * giao thành công, nhà cung cấp ngừng gửi, bình luận mất trắng nhiều ngày.
+ *
+ * Giữ nguyên bí mật ký và danh sách sự kiện của bản ghi đang có: chỉ đổi địa
+ * chỉ. Ghi đè cả hai thứ kia sẽ làm hỏng phần xác thực chữ ký.
+ */
+export async function dangKyDiaChiWebhook(
+  diaChi: string
+): Promise<{ doi: boolean; cu?: string }> {
+  const data = await request<{
+    webhooks?: Array<{ _id: string; name: string; url: string; secret: string; events: string[] }>;
+  }>("/webhooks/settings", { retries: 0 });
+
+  const hook = data.webhooks?.[0];
+  if (!hook) return { doi: false };
+  if (hook.url === diaChi) return { doi: false, cu: hook.url };
+
+  await request("/webhooks/settings", {
+    method: "PUT",
+    body: {
+      _id: hook._id,
+      name: hook.name,
+      url: diaChi,
+      secret: hook.secret,
+      events: hook.events,
+      isActive: true,
+    },
+    retries: 0,
+  });
+  return { doi: true, cu: hook.url };
+}
+
 export async function layNhatKyWebhook(limit = 50): Promise<LanGiaoWebhook[]> {
   const data = await request<{ logs?: LanGiaoWebhook[] }>("/webhooks/logs", {
     query: { limit },
